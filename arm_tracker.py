@@ -176,9 +176,17 @@ def compute_angles(lm):
 
 
 # ------------------------------------------------------------------ drawing
-def draw_overlay(img, lm_px, vis, angles, fps, tracking_ok, min_vis):
-    """Draw the right-arm stick figure and a readout panel."""
+def draw_overlay(img, lm_px, vis, angles, fps, tracking_ok, min_vis, s=1.0):
+    """
+    Draw the right-arm stick figure and a readout panel.
+
+    s scales the text, markers and panel with the window size, so the overlay
+    stays readable when the view is enlarged.
+    """
     h, w = img.shape[:2]
+    thick = max(1, int(round(2 * s)))
+    limb = max(2, int(round(5 * s)))
+    dot = max(4, int(round(9 * s)))
 
     GREEN  = (80, 220, 120)
     GREY   = (130, 130, 130)
@@ -189,31 +197,34 @@ def draw_overlay(img, lm_px, vis, angles, fps, tracking_ok, min_vis):
     # --- torso, drawn faintly for context
     for a, b in TORSO_CHAIN:
         if vis[a] > min_vis and vis[b] > min_vis:
-            cv2.line(img, lm_px[a], lm_px[b], GREY, 2, cv2.LINE_AA)
+            cv2.line(img, lm_px[a], lm_px[b], GREY, thick, cv2.LINE_AA)
 
     # --- the right arm itself, drawn boldly
     for a, b in ARM_CHAIN:
         ok = vis[a] > min_vis and vis[b] > min_vis
         colour = GREEN if ok else RED
-        cv2.line(img, lm_px[a], lm_px[b], colour, 5, cv2.LINE_AA)
+        cv2.line(img, lm_px[a], lm_px[b], colour, limb, cv2.LINE_AA)
 
     # --- joints
     for idx, name in ((R_SHOULDER, "shoulder"), (R_ELBOW, "elbow"), (R_WRIST, "wrist")):
         ok = vis[idx] > min_vis
         colour = GREEN if ok else RED
-        cv2.circle(img, lm_px[idx], 9, colour, -1, cv2.LINE_AA)
-        cv2.circle(img, lm_px[idx], 9, (20, 20, 20), 2, cv2.LINE_AA)
-        cv2.putText(img, name, (lm_px[idx][0] + 14, lm_px[idx][1] + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, WHITE, 1, cv2.LINE_AA)
+        cv2.circle(img, lm_px[idx], dot, colour, -1, cv2.LINE_AA)
+        cv2.circle(img, lm_px[idx], dot, (20, 20, 20), thick, cv2.LINE_AA)
+        cv2.putText(img, name,
+                    (lm_px[idx][0] + int(16 * s), lm_px[idx][1] + int(6 * s)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5 * s, WHITE, thick, cv2.LINE_AA)
 
     # --- readout panel
-    panel_w, panel_h = 300, 160
-    sub = img[10:10 + panel_h, 10:10 + panel_w]
+    pad = int(10 * s)
+    panel_w, panel_h = int(300 * s), int(170 * s)
+    panel_w, panel_h = min(panel_w, w - 2 * pad), min(panel_h, h - 2 * pad)
+    sub = img[pad:pad + panel_h, pad:pad + panel_w]
     sub[:] = cv2.addWeighted(sub, 0.25, np.full_like(sub, PANEL, np.uint8), 0.75, 0)
 
     def line(i, text, colour=WHITE):
-        cv2.putText(img, text, (24, 40 + i * 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.56, colour, 1, cv2.LINE_AA)
+        cv2.putText(img, text, (pad + int(14 * s), pad + int((30 + i * 27) * s)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.56 * s, colour, thick, cv2.LINE_AA)
 
     if tracking_ok:
         line(0, "RIGHT ARM TRACKED", GREEN)
@@ -230,7 +241,8 @@ def draw_overlay(img, lm_px, vis, angles, fps, tracking_ok, min_vis):
     line(4, fmt("wrist_roll",    "wrist*"), GREY)
 
     cv2.putText(img, f"{fps:4.1f} fps   q to quit   * wrist is unreliable",
-                (14, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, GREY, 1, cv2.LINE_AA)
+                (int(14 * s), h - int(14 * s)), cv2.FONT_HERSHEY_SIMPLEX,
+                0.45 * s, GREY, thick, cv2.LINE_AA)
 
 
 # -------------------------------------------------------------------- node
@@ -298,23 +310,40 @@ class ArmTracker(Node):
     def process(self, frame):
         self._last_frame_time = time.time()
 
-        if self.args.mirror:
-            frame = cv2.flip(frame, 1)
+        src_h, src_w = frame.shape[:2]
 
-        h, w = frame.shape[:2]
-
+        # Detection runs on the UNMIRRORED frame.
+        #
+        # MediaPipe labels landmarks by the anatomy it sees, so running it on a
+        # mirrored image makes it call the operator's LEFT arm "right". Mirror
+        # only the picture we display, never the picture we measure.
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
         results = self.pose.process(rgb)
+
+        # Build the view: mirror for natural interaction, then enlarge.
+        display = cv2.flip(frame, 1) if self.args.mirror else frame
+        s = 1.0
+        if self.args.width and self.args.width > src_w:
+            s = self.args.width / float(src_w)
+            display = cv2.resize(display, (int(src_w * s), int(src_h * s)),
+                                 interpolation=cv2.INTER_LINEAR)
+        display = np.ascontiguousarray(display)
+        h, w = display.shape[:2]
 
         angles = {"shoulder_elev": None, "shoulder_azim": None,
                   "elbow_flex": None, "wrist_roll": None}
         tracking_ok = False
 
         if results.pose_landmarks and results.pose_world_landmarks:
-            # Pixel coordinates, for drawing
-            lm_px = [(int(p.x * w), int(p.y * h))
-                     for p in results.pose_landmarks.landmark]
+            # Pixel coordinates for drawing, mapped onto the displayed image.
+            # Landmarks come from the unmirrored frame, so mirror their x here
+            # to line the skeleton up with the mirrored view.
+            def to_px(p):
+                x = (1.0 - p.x) if self.args.mirror else p.x
+                return (int(x * w), int(p.y * h))
+
+            lm_px = [to_px(p) for p in results.pose_landmarks.landmark]
             vis = [p.visibility for p in results.pose_landmarks.landmark]
 
             # Metric world coordinates, for the angle maths
@@ -330,16 +359,17 @@ class ArmTracker(Node):
                 angles = compute_angles(lm_world)
                 tracking_ok = True
 
-            draw_overlay(frame, lm_px, vis, angles, self._fps,
-                         tracking_ok, self.min_vis)
+            draw_overlay(display, lm_px, vis, angles, self._fps,
+                         tracking_ok, self.min_vis, s)
         else:
-            cv2.putText(frame, "NO PERSON DETECTED", (24, 44),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (60, 60, 230), 2, cv2.LINE_AA)
+            cv2.putText(display, "NO PERSON DETECTED",
+                        (int(24 * s), int(44 * s)), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8 * s, (60, 60, 230), max(2, int(2 * s)), cv2.LINE_AA)
 
         self.publish(angles, tracking_ok)
         self.tick_fps()
 
-        cv2.imshow("FR5 arm tracker  -  right arm", frame)
+        cv2.imshow("FR5 arm tracker  -  right arm", display)
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
             raise KeyboardInterrupt
@@ -393,8 +423,12 @@ def main():
     ap.add_argument("--device", type=int, default=0,
                     help="webcam index when --source webcam")
     ap.add_argument("--mirror", action="store_true", default=True,
-                    help="mirror the image, so moving right moves right on screen")
+                    help="mirror the DISPLAY only, so moving right moves right "
+                         "on screen; detection always runs unmirrored")
     ap.add_argument("--no-mirror", dest="mirror", action="store_false")
+    ap.add_argument("--width", type=int, default=1280,
+                    help="window width in pixels; the frame is upscaled to "
+                         "this (default 1280, 0 for native size)")
     ap.add_argument("--min-visibility", type=float, default=0.6,
                     help="landmark confidence below which a joint is untrusted")
     ap.add_argument("--model-complexity", type=int, default=1, choices=(0, 1, 2),

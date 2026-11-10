@@ -1,26 +1,60 @@
 # Python dependencies for the FR5 vision and teleoperation scripts.
 #
-#   pip3 install -r requirements.txt --break-system-packages
+#   cd ~/fairino_380_ws
+#   pip3 install -r requirements.txt
 #
-# --break-system-packages is needed on Ubuntu 22.04, which marks the system
-# Python as externally managed. This workspace runs as root in WSL, so there
-# is no virtualenv in play.
+# On a slow connection:
+#   pip3 install --default-timeout=120 --retries 10 -r requirements.txt
+#
+# DO NOT add --break-system-packages. Ubuntu 22.04 ships pip 22.0.2, which does
+# not have that flag, and 22.04 does not enforce the restriction it exists for.
+# Adding it makes pip reject the whole command.
 #
 # ---------------------------------------------------------------------------
-# NOT installable with pip -- these come from apt, see README Part 1.1 and 5.2:
+# THE VERSIONS BELOW ARE PINNED ON PURPOSE. DO NOT LOOSEN THEM.
 #
+# ROS 2 Humble is from 2022 and its apt packages (matplotlib, cv_bridge,
+# python3-opencv) are all built against numpy 1.x. Current pip wheels have moved
+# to numpy 2. The two cannot coexist. An unpinned install pulls the numpy-2 side
+# and breaks the vision stack, with symptoms that look unrelated:
+#
+#   AttributeError: _ARRAY_API not found
+#       numpy 2 loaded against a numpy-1.x C extension
+#   mediapipe is not installed   (when it is)
+#       the import failed on the above and got misreported
+#   opencv-contrib-python 5 requires numpy>=2
+#       opencv 5 is numpy-2 only
+#   module 'mediapipe' has no attribute 'solutions'
+#       mediapipe 1.x DELETED the Solutions API that arm_tracker.py uses
+#
+# Note that every pip install re-resolves dependencies and can silently upgrade
+# numpy again -- installing mediapipe pulls in jax and scipy, which drag numpy 2
+# back in. If you ever install by hand, pin numpy LAST.
+#
+# README Part 4.8 documents all of this.
+# ---------------------------------------------------------------------------
+
+# Must stay below 2. Everything else here and in ROS Humble depends on it.
+numpy==1.26.4
+
+# Last release with the mp.solutions API used by arm_tracker.py.
+# mediapipe 1.x would need the tracker rewritten for the Tasks API plus a
+# separate .task model file download.
+mediapipe==0.10.14
+
+# opencv 5 is numpy-2 only. This is the last 4.x that works with numpy 1.26.
+opencv-contrib-python==4.10.0.84
+
+# ---------------------------------------------------------------------------
+# NOT installable with pip -- these come from apt:
+#
+#   sudo apt install -y python3-pip python3-tk usbutils
 #   sudo apt install -y ros-humble-desktop
 #   sudo apt install -y ros-humble-moveit
 #   sudo apt install -y ros-humble-ros2-control ros-humble-ros2-controllers
 #   sudo apt install -y ros-humble-realsense2-camera ros-humble-realsense2-description
 #   sudo apt install -y ros-humble-cv-bridge
-#   sudo apt install -y python3-colcon-common-extensions python3-rosdep usbutils
+#   sudo apt install -y python3-colcon-common-extensions python3-rosdep
 #
+# python3-pip and python3-tk are NOT installed by default on Ubuntu 22.04.
 # ---------------------------------------------------------------------------
-
-# Pose estimation. Used by arm_tracker.py for the operator's arm landmarks.
-# Pulls in opencv-contrib-python and protobuf as dependencies.
-mediapipe>=0.10.0
-
-# Vector maths for the torso frame and joint angle computation.
-numpy>=1.24
