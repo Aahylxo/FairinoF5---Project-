@@ -402,18 +402,30 @@ class App:
                 fg="#888" if math.isnan(v) else "#111")
 
         targets = []
+        mapped_any = False
         all_valid = tracking
         for row in self.rows:
             value, state = row.compute(human, self.neutral,
                                        self.use_neutral.get())
             row.show(value, state)
+
+            if state != "none":
+                mapped_any = True
+
             if value is None:
                 targets.append(float("nan"))
-                all_valid = False
-            else:
-                targets.append(value)
-                if state == "clamp":
+                # A joint with no source assigned is not a failure -- it simply
+                # holds position downstream. Only a joint that HAS a source but
+                # could not be computed (tracking lost) invalidates the output.
+                if state != "none":
                     all_valid = False
+            else:
+                # A clamped value is still a usable command: clamping IS the
+                # protection, so it does not invalidate. The panel shows it red.
+                targets.append(value)
+
+        if not mapped_any:
+            all_valid = False
 
         self.node.publish_targets(targets, all_valid)
         self.last_count = count

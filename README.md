@@ -50,11 +50,126 @@ Intel RealSense D455.
 - [5.5 Running the whole pipeline](#55-running-the-whole-pipeline)
 - [5.6 Test in three stages](#56-test-in-three-stages--do-not-skip-stage-2)
 
+**[QUICK START — teleoperation in simulation](#quick-start--teleoperation-in-simulation)**
+
 **[PART 6 — Robot parameters](#part-6--robot-parameters)**
 
 **[PART 7 — Status](#part-7--status)**
 
 **[PART 8 — Troubleshooting](#part-8--troubleshooting)**
+---
+---
+
+# QUICK START — teleoperation in simulation
+
+Everything already installed, nothing connected to the real robot. Five terminals
+in VS Code (WSL), plus one admin PowerShell. **Every Ubuntu terminal starts with:**
+
+```bash
+source /opt/ros/humble/setup.bash
+```
+
+Full explanations: camera in Part 4, pipeline in Part 5.
+
+### 0 — Forward the camera into WSL (admin PowerShell)
+
+```powershell
+usbipd list
+usbipd attach --wsl --busid 2-4
+```
+
+Must then read **Attached**.
+`Not shared` → `usbipd bind --force --busid 2-4` first.
+`no device with busid` → unplugged, or on another port; use the BUSID the list shows.
+
+### 0b — Confirm the config is on the SIMULATED robot
+
+```bash
+grep plugin ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro
+```
+
+Must print `mock_components/GenericSystem`. If not:
+
+```bash
+sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSystem|' \
+  ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro
+```
+
+### 1 — Camera
+
+```bash
+pgrep -af realsense          # MUST be empty; else: pkill -f realsense2_camera_node
+lsusb | grep -i intel        # must show the D455
+
+ros2 launch realsense2_camera rs_launch.py \
+  rgb_camera.color_profile:=640x360x15 \
+  enable_depth:=false enable_infra1:=false enable_infra2:=false
+```
+
+Wait for `RealSense Node Is Up!`, then leave it alone.
+
+### 2 — Tracker
+
+```bash
+python3 ~/fairino_380_ws/arm_tracker.py
+```
+
+Green skeleton, `RIGHT ARM TRACKED`.
+
+### 3 — Simulated robot
+
+```bash
+cd ~/fairino_380_ws
+source install/local_setup.bash
+ros2 launch fairino5_v6_moveit2_config demo.launch.py
+```
+
+RViz opens. **Do not touch Plan or Execute** — teleoperation bypasses MoveIt.
+
+### 4 — Mapping panel
+
+```bash
+python3 ~/fairino_380_ws/joint_mapper.py
+```
+
+### 5 — Teleoperation
+
+```bash
+python3 ~/fairino_380_ws/teleop_node.py --toggle
+```
+
+### 6 — Drive it
+
+1. Mapper: **j3** → source **`shoulder_elev`**, gain `1.00`, offset `0.0`.
+   Leave the other five on `(none)`.
+2. Stand ~2 m back, whole torso in frame.
+3. Click **Capture neutral pose**.
+4. Raise and lower your arm — the j3 target should move.
+5. Teleop status should be green: *ready*. Click **CLICK TO START MOVING**.
+6. Raise and lower your arm. The FR5 moves in RViz, lagging behind you — that is
+   the 10 °/s rate limit working.
+
+Wrong direction → tick **invert**. Too small → raise **gain**. Twitchy →
+restart teleop with `--filter-hz 1.0`.
+
+**Use `shoulder_elev`, not `shoulder_azim`.** Azimuth is meaningless when the arm is
+near vertical or hanging down, and jumps around on noise there (Part 5.2).
+
+### Shutdown
+
+`Ctrl+C` each terminal, then optionally:
+
+```powershell
+usbipd detach --busid 2-4
+```
+
+### The two rules that cause every camera failure
+
+1. **`attach` every session.** It never persists across reboots, WSL restarts or unplugs.
+2. **One camera node, ever.** A second gives `errno=16 busy`, which triggers a hardware
+   reset and drops the usbipd attachment entirely.
+
+
 
 ---
 ---
@@ -1239,11 +1354,24 @@ Options:
 takes **6 seconds** to arrive, moving at exactly 10 °/s throughout. The operator's arm can
 move as fast as it likes; the robot cannot.
 
-### Why the deadman is a mouse button
+### Hold mode vs toggle mode
 
-Holding a key in a terminal is unreliable — key repeat, focus, and auto-repeat all
-interfere. A GUI button press/release is unambiguous. The node also releases on window
-focus loss and on the pointer leaving the button.
+**Default is hold** — press and keep holding the button; release stops. This is the
+safer design: letting go is the natural reaction if something goes wrong, and it cannot
+be left on by accident.
+
+**`--toggle`** gives click-on / click-off instead. Easier when you need both hands free
+or want to watch RViz without worrying about the pointer. A separate red **STOP** button
+appears beside it.
+
+**`Esc` or `Space` stops immediately in either mode.**
+
+A note on why hold mode is bound the way it is: it deliberately does *not* disengage when
+the pointer leaves the button. An earlier version did, and nudging the mouse a few pixels
+while watching RViz silently dropped out of motion. It does still stop on window focus
+loss, which is intentional — alt-tabbing away should not leave the robot live.
+
+For stage 3 on real hardware, prefer hold mode unless you have a specific reason not to.
 
 ## 5.5 Running the whole pipeline
 

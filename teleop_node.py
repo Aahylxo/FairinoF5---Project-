@@ -204,25 +204,61 @@ class TeleopApp:
         dframe = ttk.Frame(root)
         dframe.pack(fill="x", padx=10, pady=8)
 
+        self.idle_text = ("CLICK TO START MOVING" if args.toggle
+                          else "HOLD TO MOVE THE ROBOT")
+        self.live_text = ("CLICK TO STOP" if args.toggle
+                          else "MOVING  -  release to stop")
+
         self.deadman = tk.Button(
-            dframe, text="HOLD TO MOVE THE ROBOT",
+            dframe, text=self.idle_text,
             font=("TkDefaultFont", 14, "bold"),
             bg="#2d7a3e", fg="white", activebackground="#1f5a2c",
             activeforeground="white", relief="raised", bd=4, height=2)
         self.deadman.pack(fill="x")
-        self.deadman.bind("<ButtonPress-1>", self.press)
-        self.deadman.bind("<ButtonRelease-1>", self.release)
-        self.deadman.bind("<Leave>", self.release)
-        root.bind("<FocusOut>", self.release)
 
+        if args.toggle:
+            # Toggle mode: one click on, one click off.
+            self.deadman.config(command=self.toggle)
+
+            stop = tk.Button(dframe, text="STOP   (Esc)",
+                             font=("TkDefaultFont", 12, "bold"),
+                             bg="#a93226", fg="white",
+                             activebackground="#7b241c",
+                             activeforeground="white", bd=3,
+                             command=self.release)
+            stop.pack(fill="x", pady=(6, 0))
+        else:
+            # Hold mode: press and keep holding.
+            #
+            # Deliberately NOT bound to <Leave>: nudging the pointer off the
+            # button while watching RViz would silently disengage.
+            self.deadman.bind("<ButtonPress-1>", self.press)
+            self.deadman.bind("<ButtonRelease-1>", self.release)
+            root.bind("<FocusOut>", self.release)
+
+        # Escape always stops, in either mode.
+        root.bind("<Escape>", self.release)
+        root.bind("<space>", self.release)
+
+        mode_note = ("TOGGLE mode - click on, click off, Esc stops"
+                     if args.toggle else
+                     "HOLD mode - motion only while the button is held")
         tk.Label(root,
-                 text=f"max {args.max_speed:.0f} deg/s per joint   -   "
-                      f"the physical e-stop is still the real stop",
+                 text=f"{mode_note}   |   max {args.max_speed:.0f} deg/s "
+                      f"per joint   |   the physical e-stop is still the "
+                      f"real stop",
                  fg="#666", font=("TkDefaultFont", 9)).pack(pady=(0, 8))
 
         self.tick()
 
     # --- deadman ----------------------------------------------------------
+    def toggle(self):
+        """Toggle mode: one click engages, the next disengages."""
+        if self.enabled:
+            self.release()
+        else:
+            self.press()
+
     def press(self, _event=None):
         targets, valid, t_stamp, actual, a_stamp = self.node.snapshot()
         now = time.time()
@@ -234,13 +270,22 @@ class TeleopApp:
             self.reason = "refused: no /joint_states - is the robot running?"
             return
 
-        # Engage gate: refuse if the mapped target is far from where the arm
+        # Engage gate: refuse if a mapped target is far from where the arm
         # actually is. Without this, enabling would command a large jump.
-        gaps = [abs(t - a) for t, a in zip(targets, actual)]
-        worst = max(gaps)
-        if worst > self.args.tolerance:
-            bad = [f"{JOINTS[i]} off by {g:.0f}"
-                   for i, g in enumerate(gaps) if g > self.args.tolerance]
+        #
+        # Joints with a NaN target are unmapped and simply hold position, so
+        # they are skipped -- comparing NaN to a number yields nonsense.
+        gaps = [(i, abs(t - a))
+                for i, (t, a) in enumerate(zip(targets, actual))
+                if t is not None and not math.isnan(t)]
+
+        if not gaps:
+            self.reason = "refused: no joints are mapped"
+            return
+
+        bad = [f"{JOINTS[i]} off by {g:.0f}"
+               for i, g in gaps if g > self.args.tolerance]
+        if bad:
             self.reason = "refused: " + ", ".join(bad)
             return
 
@@ -249,13 +294,13 @@ class TeleopApp:
         self.filtered = list(actual)
         self.enabled = True
         self.reason = "engaged"
-        self.deadman.config(bg="#a93226", text="MOVING  -  release to stop")
+        self.deadman.config(bg="#a93226", text=self.live_text)
 
     def release(self, _event=None):
         if self.enabled:
             self.reason = "stopped: deadman released"
         self.enabled = False
-        self.deadman.config(bg="#2d7a3e", text="HOLD TO MOVE THE ROBOT")
+        self.deadman.config(bg="#2d7a3e", text=self.idle_text)
 
     def quit(self):
         self.release()
@@ -277,13 +322,11 @@ class TeleopApp:
             if not valid or not target_fresh:
                 self.enabled = False
                 self.reason = "FROZE: tracking lost"
-                self.deadman.config(bg="#2d7a3e",
-                                    text="HOLD TO MOVE THE ROBOT")
+                self.deadman.config(bg="#2d7a3e", text=self.idle_text)
             elif not state_fresh:
                 self.enabled = False
                 self.reason = "FROZE: lost /joint_states"
-                self.deadman.config(bg="#2d7a3e",
-                                    text="HOLD TO MOVE THE ROBOT")
+                self.deadman.config(bg="#2d7a3e", text=self.idle_text)
 
         # ---- the safety chain
         if self.enabled and self.command is not None:
@@ -360,6 +403,10 @@ def main():
     ap.add_argument("--filter-hz", type=float, default=FILTER_HZ,
                     help=f"low-pass cutoff, lower is smoother "
                          f"(default {FILTER_HZ:.1f})")
+    ap.add_argument("--toggle", action="store_true",
+                    help="click to start, click to stop, instead of "
+                         "hold-to-move. Convenient, but a held deadman is "
+                         "safer on real hardware")
     ap.add_argument("--tolerance", type=float, default=ENGAGE_TOLERANCE,
                     help=f"max degrees between target and actual when "
                          f"engaging (default {ENGAGE_TOLERANCE:.0f})")
