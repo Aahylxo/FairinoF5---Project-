@@ -125,7 +125,7 @@ intended. Always verify with feedback afterwards. Never re-send a command becaus
 
 Needed by both methods.
 
-## 1.1 One-time install
+## 1.1 One-time install (already done)
 
 Recorded so the project is reproducible from a clean Ubuntu 22.04 install.
 
@@ -150,6 +150,18 @@ source ~/.bashrc
 ```
 
 **Check:** `echo $ROS_DISTRO` prints `humble`.
+
+### Install the Python dependencies
+
+```bash
+cd ~/fairino_380_ws
+pip3 install -r requirements.txt --break-system-packages
+sudo apt install -y ros-humble-cv-bridge
+```
+
+`--break-system-packages` is needed because Ubuntu 22.04 marks the system Python as
+externally managed. `requirements.txt` also lists, in comments, every apt package this
+project needs that pip cannot install.
 
 ### Clone the vendor driver — pinned tag
 
@@ -510,6 +522,11 @@ RViz opens with the FR5 model. Drag the marker, Plan, Execute.
 **This is a fake arm** — the config ships with `mock_components/GenericSystem`, and the
 controller is not involved at all. Confirm the workflow works here before touching real
 hardware. `Ctrl+C` to stop.
+
+**This repository is committed in the mock state on purpose.** A fresh clone cannot
+accidentally drive a physical robot — switching to real hardware is a deliberate,
+explicit step (3.3). If you switch to real hardware, **switch it back before
+committing.**
 
 **Why this step matters:** everything you learn about the RViz interface, you learn
 safely. Only the plugin line changes afterwards.
@@ -958,7 +975,8 @@ not a finishing touch — it is the project.**
 **Install:**
 
 ```bash
-pip3 install mediapipe --break-system-packages
+cd ~/fairino_380_ws
+pip3 install -r requirements.txt --break-system-packages
 sudo apt install -y ros-humble-cv-bridge
 ```
 
@@ -1265,7 +1283,8 @@ fairino_380_ws/
 │       ├── fairino_description/         STL meshes + fairino5_v6.urdf
 │       └── fairino5_v6_moveit2_config/  MoveIt config + demo.launch.py
 ├── arm_tracker.py                       Phase 1 human arm tracker
-├── fairino_home.py                      move to home position
+├── fairino_home.py                      move to home position (Method A)
+├── requirements.txt                     Python deps; apt deps listed in comments
 ├── .gitignore                           excludes build/ install/ log/
 └── README.md
 ```

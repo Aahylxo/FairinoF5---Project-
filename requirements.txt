@@ -1,0 +1,26 @@
+# Python dependencies for the FR5 vision and teleoperation scripts.
+#
+#   pip3 install -r requirements.txt --break-system-packages
+#
+# --break-system-packages is needed on Ubuntu 22.04, which marks the system
+# Python as externally managed. This workspace runs as root in WSL, so there
+# is no virtualenv in play.
+#
+# ---------------------------------------------------------------------------
+# NOT installable with pip -- these come from apt, see README Part 1.1 and 5.2:
+#
+#   sudo apt install -y ros-humble-desktop
+#   sudo apt install -y ros-humble-moveit
+#   sudo apt install -y ros-humble-ros2-control ros-humble-ros2-controllers
+#   sudo apt install -y ros-humble-realsense2-camera ros-humble-realsense2-description
+#   sudo apt install -y ros-humble-cv-bridge
+#   sudo apt install -y python3-colcon-common-extensions python3-rosdep usbutils
+#
+# ---------------------------------------------------------------------------
+
+# Pose estimation. Used by arm_tracker.py for the operator's arm landmarks.
+# Pulls in opencv-contrib-python and protobuf as dependencies.
+mediapipe>=0.10.0
+
+# Vector maths for the torso frame and joint angle computation.
+numpy>=1.24
