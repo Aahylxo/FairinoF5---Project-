@@ -43,12 +43,16 @@ Intel RealSense D455.
 - [4.8 The Python dependency trap](#48-the-python-dependency-trap)
 
 **[PART 5 — Hand tracking and teleoperation](#part-5--hand-tracking-and-teleoperation)**
-- [5.1 Why three stages](#51-why-this-is-built-in-three-stages)
-- [5.2 Phase 1 — the tracker](#52-phase-1--the-tracker)
-- [5.3 Phase 2 — the mapping panel](#53-phase-2--the-mapping-panel)
-- [5.4 Phase 3 — the safety layer](#54-phase-3--the-safety-layer)
-- [5.5 Running the whole pipeline](#55-running-the-whole-pipeline)
-- [5.6 Test in three stages](#56-test-in-three-stages--do-not-skip-stage-2)
+- [5.0 Two methods](#50-two-methods)
+- *Method 1 — joint mapping:*
+  - [5.1 Why three stages](#51-why-this-is-built-in-three-stages)
+  - [5.2 Phase 1 — the tracker](#52-phase-1--the-tracker)
+  - [5.3 Phase 2 — the mapping panel](#53-phase-2--the-mapping-panel)
+  - [5.4 Phase 3 — the safety layer](#54-phase-3--the-safety-layer)
+  - [5.5 Running the whole pipeline](#55-running-the-whole-pipeline)
+  - [5.6 Test in three stages](#56-test-in-three-stages--do-not-skip-stage-2)
+- *Method 2 — Cartesian IK:*
+  - [5.7 Cartesian hand teleoperation](#57-method-2--cartesian-hand-teleoperation)
 
 **[QUICK START — teleoperation in simulation](#quick-start--teleoperation-in-simulation)**
 
@@ -61,6 +65,32 @@ Intel RealSense D455.
 ---
 
 # QUICK START — teleoperation in simulation
+
+## The short version — Method 2, two terminals
+
+After attaching the camera (step 0 below) and confirming the xacro is on mock (step 0b):
+
+```bash
+# terminal 1 -- the robot
+cd ~/fairino_380_ws && source /opt/ros/humble/setup.bash && source install/local_setup.bash
+ros2 launch fairino5_v6_moveit2_config demo.launch.py
+```
+
+```bash
+# terminal 2 -- camera + vision + control
+source /opt/ros/humble/setup.bash
+ros2 launch ~/fairino_380_ws/teleop.launch.py
+```
+
+Then, in the window that opens: **GO TO HOME POSE** → wait for `at home` →
+**CAPTURE NEUTRAL POSE** → **CLICK TO START MOVING** → move your hand.
+
+That is Method 2 (Part 5.7), and it is the one to demonstrate. The longer sequence below
+is Method 1, which uses five terminals and is kept for comparison.
+
+---
+
+## The long version — Method 1, five terminals
 
 Everything already installed, nothing connected to the real robot. Five terminals
 in VS Code (WSL), plus one admin PowerShell. **Every Ubuntu terminal starts with:**
@@ -1164,6 +1194,28 @@ your arm → camera → arm_tracker.py  → /human_arm_angles
                   → teleop_node.py  → SAFETY → /fairino5_controller/joint_trajectory → robot
 ```
 
+## 5.0 Two methods
+
+There are two working teleoperation methods in this repository. **Both are kept** — they
+take different approaches to the same problem and are worth comparing.
+
+| | **Method 1 — joint mapping** (5.1 – 5.6) | **Method 2 — Cartesian IK** (5.7) |
+|---|---|---|
+| Input | your shoulder and elbow **angles** | your hand **position** in 3D |
+| Output | chosen joints driven directly | all six joints, solved by IK |
+| Config | 6 dropdowns, gains, offsets | 3 axis choices and a scale |
+| Floor protection | not possible | one line (`z_min`) |
+| Uses the FK/IK work | no | yes, centrally |
+| Processes | 3 (+ camera) | 1 (+ camera, one launch file) |
+| Scripts | `arm_tracker.py`, `joint_mapper.py`, `teleop_node.py` | `hand_teleop.py`, `teleop.launch.py` |
+
+**Method 2 is the better one** and the one to demonstrate. Method 1 is kept because it is
+simpler to explain, it is what the pipeline was built up from, and the failure that
+motivated Method 2 (5.7) is a genuinely instructive result.
+
+The safety chain — deadman, rate limiting, smoothing, clamping, freeze on tracking loss —
+is the same in both.
+
 ## 5.1 Why this is built in three stages
 
 Pose estimation jitters. A landmark flickers a few pixels, the computed elbow angle jumps
@@ -1445,6 +1497,190 @@ verify as in Part 3.4, then run `teleop_node.py`.
 
 **Remember the planning scene is empty** — MoveIt and this node know nothing about the
 table, the mount, the cables or you. Collision checking is not protecting you here.
+---
+
+## 5.7 METHOD 2 — Cartesian hand teleoperation
+
+**One process, one window.** `hand_teleop.py` replaces `arm_tracker.py` +
+`joint_mapper.py` + `teleop_node.py`, and `teleop.launch.py` starts it together with the
+camera.
+
+```bash
+# terminal 1 -- the robot
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+ros2 launch fairino5_v6_moveit2_config demo.launch.py
+
+# terminal 2 -- camera + vision + control
+source /opt/ros/humble/setup.bash
+ros2 launch ~/fairino_380_ws/teleop.launch.py
+```
+
+Launch arguments:
+
+```bash
+ros2 launch ~/fairino_380_ws/teleop.launch.py \
+    dry_run:=true       # compute everything, publish nothing
+    hold:=true          # hold-to-move instead of click-to-toggle
+    scale:=1.5          # hand motion amplification
+    max_speed:=5.0      # degrees per second per joint
+    filter_hz:=1.0      # lower is smoother, laggier
+```
+
+Or run the script directly: `python3 ~/fairino_380_ws/hand_teleop.py --dry-run`
+
+### Why Cartesian instead of joint-to-joint
+
+Method 1 maps your joint angles to the robot's joint angles. That works, but:
+
+- your arm and the FR5 are not the same shape, so every mapping is arbitrary
+- each joint needs a hand-tuned offset, gain and direction
+- **it has no idea where the tool actually ends up**
+
+That last point is not theoretical. During testing, j2 and j3 were both mapped to
+`shoulder_elev` with offset 0. Raising an arm commanded j2 to +150°, which the clamp cut
+to its +85° soft limit — a 175° swing from home. The arm went into the floor with every
+joint still legally inside its limits. **Joint limits do not know where the floor is.**
+
+Working in Cartesian space fixes both problems:
+
+| | Method 1 (joint) | Method 2 (Cartesian) |
+|---|---|---|
+| Input | 3 human joint angles | hand position in 3D |
+| Configuration | 6 dropdowns, 6 gains, 6 offsets | 3 axis choices and a scale |
+| Floor protection | not possible | one line: `z_min` |
+| Uses the IK | no | yes — it is the core of it |
+| 3-DOF → 6-DOF | 3 joints driven, 3 fixed | fully determined by IK |
+| Processes | 3 | 1 |
+
+### The 3-DOF to 6-DOF problem
+
+MediaPipe reliably gives three usable numbers from an arm: two at the shoulder and one at
+the elbow. The FR5 has six joints. Method 1 answers this by driving three joints and
+leaving three alone.
+
+Method 2 answers it properly. **Three numbers of hand position, plus a fixed tool
+orientation, make a complete 6-DOF pose** — three for position, three for orientation.
+Inverse kinematics then returns all six joint angles. Nothing is left unused and nothing
+is arbitrary.
+
+The orientation is whatever the robot had when you pressed **Capture neutral**. That
+guarantees the starting pose is reachable, and means you never have to specify an
+orientation by hand.
+
+### The chain, step by step
+
+```
+camera -> MediaPipe -> torso frame -> offset from neutral -> axis map + scale
+       -> offset clamp -> workspace clamp -> IK -> flip check
+       -> low-pass -> slew limit -> joint clamp -> controller
+```
+
+| Step | What happens |
+|---|---|
+| **1. Image** | `/camera/camera/color/image_raw` at 15 Hz, converted by `cv_bridge` |
+| **2. Landmarks** | MediaPipe Pose returns 33 landmarks; `pose_world_landmarks` are metric 3D positions in metres |
+| **3. Torso frame** | built from both shoulders and both hips: x right, y up the spine, z forward from the chest. The wrist is expressed in this frame, so turning or stepping sideways commands nothing |
+| **4. Offset** | hand position minus the position captured at neutral. Relative, so there is nothing to calibrate |
+| **5. Axis map** | right/up/forward assigned to robot X/Y/Z, inverted as configured, times scale, metres → mm, added to the neutral tool position |
+| **6. Offset clamp** | ±300 mm per axis from neutral, keeping motion local |
+| **7. Workspace clamp** | absolute limits: `z > 180`, `z < 900`, `250 < r < 870` |
+| **8. IK** | target point + fixed orientation → `fr5_kinematics.ik()` → up to 8 branches, filtered to the FR5 soft limits, nearest to the current pose chosen |
+| **9. Flip check** | compared to the PREVIOUS frame's solution; a jump over 30° means IK switched branch, so hold |
+| **10. Low-pass** | absorbs pose-estimation jitter |
+| **11. Slew limit** | hard cap of `max_speed` °/s per joint |
+| **12. Publish** | `JointTrajectory` on `/fairino5_controller/joint_trajectory` |
+
+### Operating it — three buttons, in order
+
+**0. GO TO HOME POSE** — drives the arm to `0, −90, 90, −90, −90, 0` through the same
+rate limiter. Wait for `at home`.
+
+**1. CAPTURE NEUTRAL POSE** — records your hand position and the robot's tool pose.
+
+**2. CLICK TO START MOVING** — engages. Click again, press `Esc`, `Space`, or the red
+STOP button to stop.
+
+**Always home before capturing.** The home pose puts the tool 696 mm from the base at
+z = 477: 174 mm of reach headroom and 297 mm above the floor. Capturing from a
+stretched-out pose leaves nothing. In testing, a neutral captured at r = 817, z = 180 sat
+*exactly* on the floor limit with 53 mm of reach left, and every direction hit a limit
+immediately. The panel now warns if you capture within 120 mm of a limit.
+
+### Which hand motion does what
+
+| Your hand | Robot |
+|---|---|
+| toward the camera | arm extends outward |
+| away from the camera | arm folds back toward its base |
+| up / down | tool up / down |
+| left / right | tool swings sideways |
+
+**The arm reaches along NEGATIVE x.** The home tool position is x = −497, so "extend
+outward" means *more negative* x. That is why robot X is inverted by default.
+
+### Reliability of each axis
+
+**Up/down and left/right are solid.** They come almost directly from pixel positions.
+
+**Forward/back is the weak one.** MediaPipe infers depth from a single colour image —
+apparent limb foreshortening — and it is substantially noisier than the other two. Test
+in the order up/down, then left/right, then forward/back.
+
+**The proper fix, if forward/back is not good enough:** the D455 has a real depth sensor,
+which Part 4.5 turns off to save USB bandwidth. Re-enabling it at low resolution and
+reading the true distance to the wrist would replace the estimate with a measurement.
+Roughly twenty lines of code plus a bandwidth gamble.
+
+### What is being positioned
+
+The **tool flange** — the end of the last link, where a gripper or the camera bolts on.
+The DH chain runs base → six joints → flange, the final 100 mm being d₆ past the wrist
+joint.
+
+Your wrist is the robot's flange. The robot works out how to bend its arm to put it
+there. That is what inverse kinematics means, doing real work rather than sitting in a
+report.
+
+### Controls reference
+
+| Control | Effect |
+|---|---|
+| **axis dropdowns** | which of right/up/forward drives robot X, Y, Z |
+| **invert** | flip that axis |
+| **scale** | hand motion amplification, 0.5 – 3.0 |
+| `--max-speed` | °/s per joint, default 10 |
+| `--filter-hz` | lower is smoother and laggier, default 2.0 |
+| `--max-offset` | mm from neutral per axis, default 300 |
+| `--max-jump` | degrees before a solution counts as a flip, default 30 |
+| `Esc` / `Space` | stop, from anywhere in the window |
+
+### Tuning
+
+| Symptom | Fix |
+|---|---|
+| an axis goes backwards | tick its **invert** |
+| movement too small | raise **scale** |
+| twitchy | `filter_hz:=1.0` |
+| can't keep up | `max_speed:=15` |
+| `LIMIT: reach` constantly | press **GO TO HOME** and recapture |
+| `LIMIT: floor` | you are reaching too low; recapture higher |
+| `LIMIT: offset X/Y/Z` | past ±300 mm from neutral — recapture, or raise `--max-offset` |
+| `held: that would flip the arm configuration` | the pose is near a configuration boundary; move back and approach differently |
+| `no IK solution for that position` | geometrically unreachable with the captured orientation |
+
+### Testing stages
+
+Same three stages as Method 1 (Part 5.6), and stage 2 is still not skippable:
+
+1. `dry_run:=true` — numbers only, nothing published
+2. **Simulated robot** — xacro on `mock_components`, `demo.launch.py`, drive the arm in
+   RViz
+3. **Real robot** — supervisor present, hand on the physical e-stop
+
+---
+---
 
 # PART 6 — Robot parameters
 
@@ -1620,6 +1856,11 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 - **Phase 2 mapper:** GUI written, publishing `/fr5_joint_targets`
 - **Phase 3 teleop:** safety chain written and bench-tested — a 60° step takes 6 s at
   `--max-speed 10`, exactly as designed
+- **Method 1 drove the simulated robot** — j3 followed shoulder elevation in RViz
+- **Method 2 (Cartesian IK) drove the simulated robot** — hand position controlling the
+  tool flange through the closed-form IK, with workspace clamping and flip rejection.
+  Simulated 480 frames of continuous motion: 0 refusals, worst frame-to-frame joint
+  change 2.5°
 
 ## Not yet done
 
@@ -1735,9 +1976,11 @@ fairino_380_ws/
 │       ├── fairino_msgs/                RemoteCmdInterface.srv
 │       ├── fairino_description/         STL meshes + fairino5_v6.urdf
 │       └── fairino5_v6_moveit2_config/  MoveIt config + demo.launch.py
-├── arm_tracker.py                       Phase 1 — vision, human arm angles
-├── joint_mapper.py                      Phase 2 — mapping GUI
-├── teleop_node.py                       Phase 3 — safety layer + robot output
+├── hand_teleop.py                       METHOD 2 — Cartesian teleoperation, all-in-one
+├── teleop.launch.py                     METHOD 2 — camera + teleop in one launch
+├── arm_tracker.py                       Method 1 phase 1 — vision, arm angles
+├── joint_mapper.py                      Method 1 phase 2 — mapping GUI
+├── teleop_node.py                       Method 1 phase 3 — safety + robot output
 ├── fr5_kinematics.py                    forward + inverse kinematics
 ├── fairino_home.py                      move to home position (Method A)
 ├── joint_mapping.json                   saved mapping (created by joint_mapper.py)
