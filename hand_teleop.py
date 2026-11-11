@@ -90,10 +90,10 @@ IMAGE_TOPIC = "/camera/camera/color/image_raw"
 # This is what stops the arm reaching into the floor or folding into itself.
 # Tighten it for your bench; these are deliberately conservative.
 WORKSPACE = {
-    "z_min": 180.0,      # never below this height -- this is the floor guard
+    "z_min": 300.0,      # never below this height -- this is the floor guard
     "z_max": 900.0,
     "r_min": 250.0,      # stay out of the column above the base
-    "r_max": 870.0,      # inside the 922 mm reach, with margin
+    "r_max": 700.0,      # inside the 922 mm reach, with margin
 }
 
 # How far the tool may stray from the captured neutral position, per axis, in
@@ -119,6 +119,9 @@ DEFAULT_SCALE = 1.0
 # Refuse an IK solution that needs more than this on any one joint: that is
 # a different arm configuration, not a small correction.
 MAX_JUMP_DEG = 30.0
+
+# Max base rotation away from the captured neutral, degrees.
+MAX_AZIMUTH_DEG = 90.0
 
 # The FR5 home pose, degrees. Tool ends up around (-497, -102, 477), which is
 # 696 mm from the base -- comfortably central, with room to move in every
@@ -208,6 +211,32 @@ def hand_in_torso_frame(world_landmarks):
     return R.T @ (lm[R_WRIST] - origin)
 
 
+def to_cylindrical(p):
+    """
+    (x, y, z) -> (radius in the horizontal plane, angle about the vertical,
+    height). Angle in radians, measured the same way as the robot's j1.
+    """
+    x, y, z = p
+    return math.hypot(x, y), math.atan2(y, x), z
+
+
+def from_cylindrical(r, theta, z):
+    return np.array([r * math.cos(theta), r * math.sin(theta), z])
+
+
+def hand_cylindrical(p):
+    """
+    The operator's hand in cylindrical coordinates about their own vertical
+    axis, from a torso-frame position (x right, y up, z forward).
+
+    Returns (horizontal reach, azimuth, height). Azimuth is 0 straight out to
+    the right and increases towards the front.
+    """
+    rho = math.hypot(p[0], p[2])
+    phi = math.atan2(p[2], p[0])
+    return rho, phi, p[1]
+
+
 def clamp_offset(delta, limit):
     """Clamp the per-axis offset from the neutral position."""
     hits = []
@@ -274,6 +303,9 @@ class App:
         self.neutral_hand = None       # hand position at capture, metres
         self.neutral_pos = None        # tool position at capture, mm
         self.neutral_rot = None        # tool orientation at capture, fixed
+        self.neutral_cyl = None        # tool (radius, angle, height) at capture
+        self.neutral_hand_cyl = None   # hand (reach, azimuth, height) at capture
+        self.last_phi = None           # last good hand azimuth
         self.command = None            # the joint command we are sending
         self.filtered = None
         self.last_desired = None       # previous IK result, for flip detection
@@ -282,6 +314,7 @@ class App:
         self.reason = "idle"
         self.hits = []
         self.target_pos = None
+        self.cyl_readout = None
         self.tracking = False
 
         root.title("FR5 hand teleoperation  -  Cartesian")
@@ -302,14 +335,60 @@ class App:
                                fg="#a93226", pady=2)
         self.detail.pack(fill="x")
 
+        # ---- mode selector
+        mframe = ttk.LabelFrame(root, text=" mapping mode ")
+        mframe.pack(fill="x", padx=10, pady=(6, 2))
+        self.mode = tk.StringVar(value=args.mode)
+        for label, value, hint in (
+                ("Cylindrical  (arm swing -> base rotation)", "cylindrical",
+                 "your arm's sweep drives j1 one-for-one"),
+                ("Cartesian  (hand XYZ -> tool XYZ)", "cartesian",
+                 "straight-line offsets; base rotation is limited")):
+            row = ttk.Frame(mframe)
+            row.pack(fill="x", padx=10, pady=2)
+            ttk.Radiobutton(row, text=label, value=value,
+                            variable=self.mode,
+                            command=self.on_mode).pack(side="left")
+            tk.Label(row, text="  " + hint, fg="#777",
+                     font=("TkDefaultFont", 8)).pack(side="left")
+
+        # ---- cylindrical controls
+        self.cyl_frame = ttk.LabelFrame(root, text=" cylindrical ")
+        self.cyl_frame.pack(fill="x", padx=10, pady=4)
+
+        cbox = ttk.Frame(self.cyl_frame)
+        cbox.pack(padx=10, pady=6)
+        tk.Label(cbox, text="base rotation gain").grid(row=0, column=0, padx=6)
+        self.azim_gain = tk.DoubleVar(value=1.0)
+        ttk.Scale(cbox, from_=0.3, to=2.5, variable=self.azim_gain,
+                  orient="horizontal", length=130).grid(row=0, column=1)
+        self.azim_lab = tk.Label(cbox, text="1.00 x", width=7)
+        self.azim_lab.grid(row=0, column=2, padx=(4, 14))
+
+        self.azim_inv = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cbox, text="invert rotation",
+                        variable=self.azim_inv).grid(row=0, column=3, padx=6)
+        self.radial_inv = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cbox, text="invert reach",
+                        variable=self.radial_inv).grid(row=0, column=4, padx=6)
+
+        self.cyl_lab = tk.Label(self.cyl_frame, text="", fg="#555",
+                                font=("TkFixedFont", 10))
+        self.cyl_lab.pack(pady=(0, 6))
+
         # ---- axis mapping: three rows, not six
-        aframe = ttk.LabelFrame(root, text=" hand axis  ->  robot axis ")
+        aframe = ttk.LabelFrame(root, text=" hand axis  ->  robot axis "
+                                           " (Cartesian mode only) ")
+        self.cart_frame = aframe
         aframe.pack(fill="x", padx=10, pady=6)
 
         self.axis_src = {}
         self.axis_inv = {}
+        # The arm reaches out along NEGATIVE x from the base: the home tool
+        # position is x = -497. So "hand moves toward the camera" must map to
+        # -x for the arm to extend rather than fold back toward its base.
         defaults = {"X": "forward", "Y": "right", "Z": "up"}
-        inverted = {"X": False, "Y": True, "Z": False}
+        inverted = {"X": True, "Y": True, "Z": False}
 
         for col, axis in enumerate(("X", "Y", "Z")):
             box = ttk.Frame(aframe)
@@ -335,6 +414,7 @@ class App:
         # ---- tool position readout
         pframe = ttk.LabelFrame(root, text=" tool position (mm, robot base frame) ")
         pframe.pack(fill="x", padx=10, pady=4)
+        self.pos_frame = pframe
         self.pos_labels = {}
         for i, axis in enumerate(("X", "Y", "Z")):
             tk.Label(pframe, text=axis, width=3,
@@ -419,6 +499,7 @@ class App:
                       f"the physical e-stop is still the real stop",
                  fg="#666", font=("TkDefaultFont", 9)).pack(pady=(0, 8))
 
+        self.on_mode()
         self.tick()
 
     # --- controls ---------------------------------------------------------
@@ -437,6 +518,9 @@ class App:
         self.neutral_hand = np.array(self.hand, dtype=float)
         self.neutral_pos = T[:3, 3].copy()
         self.neutral_rot = T[:3, :3].copy()
+        self.neutral_cyl = to_cylindrical(self.neutral_pos)
+        self.neutral_hand_cyl = hand_cylindrical(self.neutral_hand)
+        self.last_phi = self.neutral_hand_cyl[1]
         r = float(np.linalg.norm(self.neutral_pos))
         z = float(self.neutral_pos[2])
 
@@ -452,6 +536,18 @@ class App:
                            f"{self.neutral_pos[1]:.0f}, "
                            f"{self.neutral_pos[2]:.0f} mm   (r={r:.0f})")
         self.go.config(state="normal")
+
+    def on_mode(self):
+        """Show only the controls that apply to the selected mode."""
+        self.cyl_frame.pack_forget()
+        self.cart_frame.pack_forget()
+        if self.mode.get() == "cylindrical":
+            self.cyl_frame.pack(fill="x", padx=10, pady=4,
+                                before=self.pos_frame)
+        else:
+            self.cart_frame.pack(fill="x", padx=10, pady=6,
+                                 before=self.pos_frame)
+        self.reason = f"{self.mode.get()} mode - capture a neutral pose"
 
     def go_home(self):
         """
@@ -612,22 +708,72 @@ class App:
         ik_ok = True
 
         if self.hand is not None and self.neutral_pos is not None:
-            delta = self.hand - self.neutral_hand        # metres, torso frame
-            comp = {"right": delta[0], "up": delta[1], "forward": delta[2]}
-
             scale = float(self.scale.get())
             self.scale_lab.config(text=f"{scale:.2f} x")
+            off_hits = []
 
-            d = []
-            for axis in ("X", "Y", "Z"):
-                v = comp[self.axis_src[axis].get()]
-                if self.axis_inv[axis].get():
-                    v = -v
-                d.append(v * 1000.0 * scale)              # metres -> mm
+            if self.mode.get() == "cylindrical":
+                # ---- CYLINDRICAL
+                #
+                # Your arm sweeps in an arc about your shoulder; the robot
+                # sweeps in an arc about its base. Matching those directly
+                # makes base rotation as easy as swinging your arm.
+                #
+                # In Cartesian mode the base is driven by a LINEAR sideways
+                # offset, capped at +/-300 mm. At a 696 mm radius that is only
+                # about +/-25 degrees of j1. Here the full sweep of your arm
+                # maps straight onto the full sweep of the base.
+                rho, phi, hy = hand_cylindrical(self.hand)
+                rho0, phi0, hy0 = self.neutral_hand_cyl
 
-            delta_mm, off_hits = clamp_offset(np.array(d),
-                                              self.args.max_offset)
-            raw = self.neutral_pos + delta_mm
+                # Azimuth is undefined when the hand is near your vertical
+                # axis, so hold the last good value rather than letting it
+                # spin on noise.
+                if rho < 0.15:
+                    phi = self.last_phi
+                    off_hits.append("azimuth held")
+                else:
+                    self.last_phi = phi
+
+                r0, th0, z0 = self.neutral_cyl
+
+                d_theta = (phi - phi0) * float(self.azim_gain.get())
+                if self.azim_inv.get():
+                    d_theta = -d_theta
+                d_theta = clamp(d_theta,
+                                -math.radians(self.args.max_azimuth),
+                                math.radians(self.args.max_azimuth))
+                if abs(d_theta) >= math.radians(self.args.max_azimuth) - 1e-6:
+                    off_hits.append("azimuth")
+
+                d_r = (rho - rho0) * 1000.0 * scale
+                d_z = (hy - hy0) * 1000.0 * scale
+                if self.radial_inv.get():
+                    d_r = -d_r
+
+                d_r = clamp(d_r, -self.args.max_offset, self.args.max_offset)
+                d_z = clamp(d_z, -self.args.max_offset, self.args.max_offset)
+
+                raw = from_cylindrical(r0 + d_r, th0 + d_theta, z0 + d_z)
+                self.cyl_readout = (r0 + d_r, math.degrees(th0 + d_theta),
+                                    z0 + d_z)
+            else:
+                # ---- CARTESIAN
+                delta = self.hand - self.neutral_hand    # metres, torso frame
+                comp = {"right": delta[0], "up": delta[1], "forward": delta[2]}
+
+                d = []
+                for axis in ("X", "Y", "Z"):
+                    v = comp[self.axis_src[axis].get()]
+                    if self.axis_inv[axis].get():
+                        v = -v
+                    d.append(v * 1000.0 * scale)          # metres -> mm
+
+                delta_mm, off_hits = clamp_offset(np.array(d),
+                                                  self.args.max_offset)
+                raw = self.neutral_pos + delta_mm
+                self.cyl_readout = None
+
             self.target_pos, box_hits = clamp_workspace(raw)
             self.hits = off_hits + box_hits
 
@@ -690,6 +836,15 @@ class App:
                 else f"{self.target_pos[i]:8.1f}")
         self.limit_lab.config(
             text="" if not self.hits else "LIMIT: " + ", ".join(self.hits))
+
+        self.azim_lab.config(text=f"{float(self.azim_gain.get()):.2f} x")
+        if getattr(self, "cyl_readout", None) is None:
+            self.cyl_lab.config(text="")
+        else:
+            r, th, z = self.cyl_readout
+            self.cyl_lab.config(
+                text=f"radius {r:7.1f} mm     base angle {th:7.1f} deg"
+                     f"     height {z:7.1f} mm")
 
         for i in range(6):
             c = self.command[i] if self.command else None
@@ -761,6 +916,14 @@ def main():
                          f"(default {MAX_SPEED_DEG_S:.0f})")
     ap.add_argument("--filter-hz", type=float, default=FILTER_HZ,
                     help=f"low-pass cutoff (default {FILTER_HZ:.1f})")
+    ap.add_argument("--mode", choices=("cylindrical", "cartesian"),
+                    default="cylindrical",
+                    help="cylindrical maps your arm's sweep onto base "
+                         "rotation; cartesian maps hand XYZ to tool XYZ "
+                         "(default cylindrical)")
+    ap.add_argument("--max-azimuth", type=float, default=MAX_AZIMUTH_DEG,
+                    help=f"max base rotation from neutral, degrees "
+                         f"(default {MAX_AZIMUTH_DEG:.0f})")
     ap.add_argument("--max-offset", type=float, default=MAX_OFFSET_MM,
                     help=f"max millimetres the tool may stray from the "
                          f"neutral position, per axis "
