@@ -33,10 +33,12 @@ from launch_ros.actions import Node
 WS = os.path.expanduser("~/fairino_380_ws")
 
 ARGUMENTS = [
+    ("source", "ros", "ros = RealSense node; webcam = plain camera, no RealSense"),
+    ("device", "0", "camera index when source:=webcam"),
     ("dry_run", "false", "compute everything, publish nothing"),
     ("hold", "false", "hold-to-move instead of click-to-toggle"),
-    ("scale", "1.4", "hand motion amplification"),
-    ("max_speed", "10.0", "degrees per second per joint"),
+    ("scale", "1.0", "hand motion amplification"),
+    ("max_speed", "5.0", "degrees per second per joint"),
     ("filter_hz", "2.0", "low-pass cutoff, lower is smoother"),
     ("max_jump", "30.0", "reject IK solutions needing more than this"),
     ("width", "640", "colour stream width"),
@@ -75,6 +77,8 @@ def launch_setup(context, *_args, **_kwargs):
 
     cmd = [
         "python3", os.path.join(WS, "hand_teleop.py"),
+        "--source", arg("source"),
+        "--device", arg("device"),
         "--scale", arg("scale"),
         "--max-speed", arg("max_speed"),
         "--filter-hz", arg("filter_hz"),
@@ -91,22 +95,22 @@ def launch_setup(context, *_args, **_kwargs):
 
     mode = "DRY RUN (publishing nothing)" if is_true(arg("dry_run")) else "LIVE"
 
+    processes = [camera, teleop] if arg("source") == "ros" else [teleop]
+
     return [
         LogInfo(msg=(
             "\n"
             "  FR5 hand teleoperation\n"
             "  ----------------------\n"
             f"  mode     : {mode}\n"
-            f"  camera   : {colour_profile}, depth off\n"
+            f"  camera   : {'RealSense ' + colour_profile + ', depth off' if arg('source') == 'ros' else 'webcam index ' + arg('device')}\n"
             f"  scale    : {arg('scale')} x\n"
             f"  max speed: {arg('max_speed')} deg/s per joint\n"
             "\n"
             "  The robot must be launched separately, in its own terminal:\n"
             "      ros2 launch fairino5_v6_moveit2_config demo.launch.py\n"
         )),
-        camera,
-        teleop,
-    ]
+    ] + processes
 
 
 def generate_launch_description():

@@ -90,10 +90,10 @@ IMAGE_TOPIC = "/camera/camera/color/image_raw"
 # This is what stops the arm reaching into the floor or folding into itself.
 # Tighten it for your bench; these are deliberately conservative.
 WORKSPACE = {
-    "z_min": 300.0,      # never below this height -- this is the floor guard
+    "z_min": 180.0,      # never below this height -- this is the floor guard
     "z_max": 900.0,
     "r_min": 250.0,      # stay out of the column above the base
-    "r_max": 700.0,      # inside the 922 mm reach, with margin
+    "r_max": 870.0,      # inside the 922 mm reach, with margin
 }
 
 # How far the tool may stray from the captured neutral position, per axis, in
@@ -106,7 +106,7 @@ WORKSPACE = {
 MAX_OFFSET_MM = 300.0
 
 # --- safety defaults ------------------------------------------------------
-MAX_SPEED_DEG_S = 10.0
+MAX_SPEED_DEG_S = 5.0
 FILTER_HZ = 2.0
 LOOP_HZ = 25.0
 STATE_TIMEOUT = 1.0
@@ -137,22 +137,64 @@ def clamp(v, lo, hi):
 # --------------------------------------------------------------------- ROS
 class TeleopNode(Node):
 
-    def __init__(self):
+    def __init__(self, args):
         super().__init__("fr5_hand_teleop")
+        self.args = args
         self.lock = threading.Lock()
         self.frame = None
         self.frame_stamp = 0.0
         self.actual = None               # joint angles, radians, j1..j6
         self.actual_stamp = 0.0
+        self.cap = None
 
-        try:
-            from cv_bridge import CvBridge
-            self.bridge = CvBridge()
-        except ImportError:
-            sys.exit("cv_bridge is not installed.  Run:\n"
-                     "  sudo apt install -y ros-humble-cv-bridge")
+        if args.source == "ros":
+            # Images arrive from the RealSense node over a ROS topic.
+            try:
+                from cv_bridge import CvBridge
+                self.bridge = CvBridge()
+            except ImportError:
+                sys.exit("cv_bridge is not installed.  Run:\n"
+                         "  sudo apt install -y ros-humble-cv-bridge")
+            self.create_subscription(Image, args.topic, self.on_image, 1)
+            self.get_logger().info(f"reading images from {args.topic}")
+        else:
+            # Read a plain webcam directly. Useful when the RealSense is not
+            # available -- the laptop's built-in camera works once it has been
+            # forwarded into WSL with usbipd.
+            self.cap = cv2.VideoCapture(args.device, cv2.CAP_V4L2)
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(args.device)
+            if not self.cap.isOpened():
+                sys.exit(f"could not open webcam {args.device}.\n"
+                         "  Check 'ls /dev/video*' and try --device 1.\n"
+                         "  The camera must be attached to WSL with usbipd.")
 
-        self.create_subscription(Image, IMAGE_TOPIC, self.on_image, 1)
+            # Ask for MJPEG. Forwarded over USB/IP, raw YUYV frames often
+            # arrive only partly filled, which shows up as a mostly-green
+            # image. MJPEG is compressed, so a frame either arrives whole or
+            # not at all.
+            self.cap.set(cv2.CAP_PROP_FOURCC,
+                         cv2.VideoWriter_fourcc(*"MJPG"))
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+            # Let the camera settle: the first few frames are often junk.
+            for _ in range(5):
+                self.cap.read()
+
+            ok, probe = self.cap.read()
+            fourcc = int(self.cap.get(cv2.CAP_PROP_FOURCC))
+            fourcc_s = "".join(chr((fourcc >> (8 * i)) & 0xFF) for i in range(4))
+            if ok and probe is not None:
+                h, w = probe.shape[:2]
+                self.get_logger().info(
+                    f"webcam {args.device}: {w}x{h}, format {fourcc_s}")
+            else:
+                self.get_logger().warn(
+                    f"webcam {args.device} opened but returned no frame. "
+                    f"Try --device 1.")
+
         self.create_subscription(JointState, "/joint_states", self.on_state, 10)
         self.pub = self.create_publisher(JointTrajectory, CONTROLLER_TOPIC, 10)
 
@@ -177,11 +219,22 @@ class TeleopNode(Node):
                 self.actual_stamp = time.time()
 
     def grab(self):
+        if self.cap is not None:
+            ok, img = self.cap.read()
+            # A partly-transferred frame comes through as a flat block of
+            # colour. Drop it rather than feeding MediaPipe nonsense.
+            if ok and img is not None and float(img.std()) > 3.0:
+                self.frame = img
+                self.frame_stamp = time.time()
         with self.lock:
             frame = None if self.frame is None else self.frame.copy()
             return (frame, self.frame_stamp,
                     None if self.actual is None else list(self.actual),
                     self.actual_stamp)
+
+    def close(self):
+        if self.cap is not None:
+            self.cap.release()
 
     def send(self, q_rad, dt):
         msg = JointTrajectory()
@@ -916,6 +969,13 @@ def main():
                          f"(default {MAX_SPEED_DEG_S:.0f})")
     ap.add_argument("--filter-hz", type=float, default=FILTER_HZ,
                     help=f"low-pass cutoff (default {FILTER_HZ:.1f})")
+    ap.add_argument("--source", choices=("ros", "webcam"), default="ros",
+                    help="ros reads the RealSense node's image topic; webcam "
+                         "opens a plain camera directly (default ros)")
+    ap.add_argument("--topic", default=IMAGE_TOPIC,
+                    help="image topic when --source ros")
+    ap.add_argument("--device", type=int, default=0,
+                    help="camera index when --source webcam (try 1 if 0 fails)")
     ap.add_argument("--mode", choices=("cylindrical", "cartesian"),
                     default="cylindrical",
                     help="cylindrical maps your arm's sweep onto base "
@@ -938,7 +998,7 @@ def main():
         sys.exit("--max-speed must be between 0 and 45 deg/s.")
 
     rclpy.init()
-    node = TeleopNode()
+    node = TeleopNode(args)
     threading.Thread(target=lambda: rclpy.spin(node), daemon=True).start()
 
     root = tk.Tk()
@@ -948,6 +1008,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        node.close()
         node.destroy_node()
         rclpy.shutdown()
 
