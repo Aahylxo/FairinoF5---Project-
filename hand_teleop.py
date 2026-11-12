@@ -123,6 +123,25 @@ MAX_JUMP_DEG = 30.0
 # Max base rotation away from the captured neutral, degrees.
 MAX_AZIMUTH_DEG = 90.0
 
+# How far the command is allowed to get ahead of where the arm actually is.
+#
+# 0 means "work it out from the speed limit", which is what you want. The
+# controller is told to reach each point within one horizon, so a lead of
+# (max_speed x horizon) is exactly the speed limit, and anything larger asks
+# the arm to move faster than it is allowed to.
+#
+# Without this the controller runs open-loop: it rate-limits from its own
+# previous command, so if the real arm lags the command marches on regardless.
+# Each new goal then asks the robot to close the whole gap within one cycle,
+# demanding a velocity far above the rate limit -- the arm overshoots,
+# corrects, overshoots, and oscillates in place. A simulated arm never shows
+# this because it reaches every commanded position instantly.
+MAX_LEAD_DEG = 0.0      # 0 = derive it from max_speed
+
+# If the arm falls further behind than this, it is not following and something
+# is wrong. Stop rather than keep commanding.
+AUTO_STOP_ERROR_DEG = 8.0
+
 # The FR5 home pose, degrees. Tool ends up around (-497, -102, 477), which is
 # 696 mm from the base -- comfortably central, with room to move in every
 # direction. Capturing a neutral pose from anywhere near a workspace limit is
@@ -241,7 +260,9 @@ class TeleopNode(Node):
         msg.joint_names = list(JOINTS)
         pt = JointTrajectoryPoint()
         pt.positions = [float(a) for a in q_rad]
-        horizon = max(0.05, dt * 2.0)
+        # A slightly longer horizon than the publish period, so
+        # consecutive goals blend rather than fight each other.
+        horizon = max(0.1, dt * 2.0)
         pt.time_from_start = Duration(sec=int(horizon),
                                       nanosec=int((horizon % 1.0) * 1e9))
         msg.points = [pt]
@@ -602,6 +623,19 @@ class App:
                                  before=self.pos_frame)
         self.reason = f"{self.mode.get()} mode - capture a neutral pose"
 
+    def lead_for(self, dt):
+        """
+        How far ahead of the real arm the command may sit.
+
+        The controller is asked to reach each point within `horizon` seconds,
+        so a gap of (max_speed x horizon) demands exactly max_speed. A little
+        margin is allowed so small tracking errors do not stall the motion.
+        """
+        if self.args.max_lead > 0:
+            return self.args.max_lead
+        horizon = max(0.1, dt * 2.0)
+        return max(0.3, self.args.max_speed * horizon * 1.2)
+
     def go_home(self):
         """
         Drive the arm back to the home pose, through the same rate limiter.
@@ -740,13 +774,25 @@ class App:
             else:
                 alpha = 1.0 - math.exp(-2.0 * math.pi * self.args.filter_hz * dt)
                 max_step = self.args.max_speed * dt
+                actual_deg = [math.degrees(a) for a in actual]
                 for i in range(6):
                     self.filtered[i] += alpha * (HOME_DEG[i] - self.filtered[i])
                     step = clamp(self.filtered[i] - self.command[i],
                                  -max_step, max_step)
                     self.command[i] += step
+                    lead = self.lead_for(dt)
+                    self.command[i] = clamp(self.command[i],
+                                            actual_deg[i] - lead,
+                                            actual_deg[i] + lead)
 
-                if not self.args.dry_run:
+                worst = max(abs(c - a)
+                            for c, a in zip(self.command, actual_deg))
+                if worst > self.args.auto_stop:
+                    self.homing = False
+                    self.reason = (f"HOMING STOPPED: the arm is not following "
+                                   f"({worst:.1f} deg behind)")
+                    self.home_btn.config(text="0.  GO TO HOME POSE")
+                elif not self.args.dry_run:
                     self.node.send([math.radians(a) for a in self.command], dt)
 
                 err = max(abs(c - h) for c, h in zip(self.command, HOME_DEG))
@@ -871,6 +917,9 @@ class App:
                     alpha = 1.0 - math.exp(-2.0 * math.pi *
                                            self.args.filter_hz * dt)
                     max_step = self.args.max_speed * dt
+                    actual_deg = [math.degrees(a) for a in actual]
+                    lead = self.lead_for(dt)
+
                     for i in range(6):
                         lo, hi = K.SOFT_LIMITS_DEG[i]
                         self.filtered[i] += alpha * (desired[i] - self.filtered[i])
@@ -878,7 +927,22 @@ class App:
                                      -max_step, max_step)
                         self.command[i] = clamp(self.command[i] + step, lo, hi)
 
-                    if not self.args.dry_run:
+                        # Closed-loop guard: never get more than `lead` degrees
+                        # ahead of the real arm. This is what stops the command
+                        # running away and the arm oscillating to catch up.
+                        self.command[i] = clamp(self.command[i],
+                                                actual_deg[i] - lead,
+                                                actual_deg[i] + lead)
+
+                    # If the arm is a long way behind, it is not following.
+                    worst = max(abs(c - a)
+                                for c, a in zip(self.command, actual_deg))
+                    if worst > self.args.auto_stop:
+                        self.enabled = False
+                        self.reason = (f"STOPPED: the arm is not following "
+                                       f"({worst:.1f} deg behind)")
+                        self.go.config(bg="#2d7a3e", text=self.idle_text)
+                    elif not self.args.dry_run:
                         self.node.send([math.radians(a) for a in self.command],
                                        dt)
 
@@ -988,6 +1052,12 @@ def main():
                     help=f"max millimetres the tool may stray from the "
                          f"neutral position, per axis "
                          f"(default {MAX_OFFSET_MM:.0f})")
+    ap.add_argument("--max-lead", type=float, default=MAX_LEAD_DEG,
+                    help=f"max degrees the command may get ahead of the real "
+                         f"arm (default {MAX_LEAD_DEG:.1f})")
+    ap.add_argument("--auto-stop", type=float, default=AUTO_STOP_ERROR_DEG,
+                    help=f"stop if the arm falls this far behind "
+                         f"(default {AUTO_STOP_ERROR_DEG:.0f})")
     ap.add_argument("--max-jump", type=float, default=MAX_JUMP_DEG,
                     help=f"refuse IK solutions needing more than this many "
                          f"degrees on any joint, which would be a "
