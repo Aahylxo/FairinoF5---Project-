@@ -65,6 +65,9 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from visualization_msgs.msg import Marker, MarkerArray
+from std_msgs.msg import ColorRGBA
+from geometry_msgs.msg import Point, Vector3
 from builtin_interfaces.msg import Duration
 
 # Our own modules, which live beside this file.
@@ -75,6 +78,13 @@ except ImportError:
     sys.exit("fr5_kinematics.py not found. It must be in the same folder as "
              "this script.")
 try:
+    import mediapipe as _mp
+    mp_hands = _mp.solutions.hands
+    mp_draw_styles = _mp.solutions.drawing_styles
+except Exception as exc:                                  # noqa: BLE001
+    sys.exit(f"mediapipe hands unavailable: {exc}")
+
+try:
     from arm_tracker import (torso_frame, mp_pose, mp_draw,
                              R_SHOULDER, R_ELBOW, R_WRIST,
                              L_SHOULDER, R_HIP, L_HIP)
@@ -82,18 +92,43 @@ except ImportError as exc:
     sys.exit(f"could not import from arm_tracker.py: {exc}\n"
              "It must be in the same folder as this script.")
 
+# --- MediaPipe Hands landmark indices
+H_WRIST = 0
+H_THUMB_TIP = 4
+H_INDEX_MCP = 5
+H_INDEX_TIP = 8
+H_MIDDLE_MCP = 9
+H_PINKY_MCP = 17
+
+# How hand movement in the image maps to robot motion.
+#
+# Image coordinates are normalised 0..1 across the frame, so these say what a
+# full sweep of the frame is worth. Apparent hand SIZE stands in for distance:
+# the hand gets bigger as it comes towards the camera, and the ratio to its
+# size at capture is a scale-free measure of how much closer it is.
+DEG_PER_FRAME_WIDTH = 140.0     # degrees of base rotation, edge to edge
+MM_PER_FRAME_HEIGHT = 700.0     # millimetres of tool height, top to bottom
+MM_PER_SIZE_DOUBLING = 700.0    # millimetres of reach per doubling in size
+
+# Pinch detection. The thumb-to-index distance is divided by the hand's own
+# size, so it works at any distance from the camera.
+PINCH_ON = 0.45                 # below this, the pinch is closed
+PINCH_OFF = 0.70                # above this, it is open (hysteresis)
+
 JOINTS = ["j1", "j2", "j3", "j4", "j5", "j6"]
 CONTROLLER_TOPIC = "/fairino5_controller/joint_trajectory"
 IMAGE_TOPIC = "/camera/camera/color/image_raw"
+DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw"
+INFO_TOPIC = "/camera/camera/color/camera_info"
 
 # --- Cartesian workspace box, millimetres in the robot's base frame --------
 # This is what stops the arm reaching into the floor or folding into itself.
 # Tighten it for your bench; these are deliberately conservative.
 WORKSPACE = {
-    "z_min": 180.0,      # never below this height -- this is the floor guard
+    "z_min": 300.0,      # never below this height -- this is the floor guard
     "z_max": 900.0,
     "r_min": 250.0,      # stay out of the column above the base
-    "r_max": 870.0,      # inside the 922 mm reach, with margin
+    "r_max": 700.0,      # inside the 922 mm reach, with margin
 }
 
 # How far the tool may stray from the captured neutral position, per axis, in
@@ -122,6 +157,22 @@ MAX_JUMP_DEG = 30.0
 
 # Max base rotation away from the captured neutral, degrees.
 MAX_AZIMUTH_DEG = 90.0
+
+# Smoothing applied to the measured hand position, in Hz. Lower is smoother.
+#
+# The torso reference frame is built from the shoulder and hip landmarks, and
+# those wobble by a few pixels every frame. That makes the frame itself rotate
+# slightly, so the computed hand angle drifts even when the operator is
+# perfectly still. Smoothing here kills it at the source, before it reaches
+# the mapping or the IK.
+HAND_SMOOTH_HZ = 2.5
+
+# Movement below this, in millimetres, is treated as noise and ignored.
+#
+# Without a deadband the target never settles: it jitters by a few millimetres
+# forever, and the robot faithfully follows every bit of it. With one, holding
+# still means the robot holds still.
+DEADBAND_MM = 12.0
 
 # How far the command is allowed to get ahead of where the arm actually is.
 #
@@ -165,6 +216,9 @@ class TeleopNode(Node):
         self.actual = None               # joint angles, radians, j1..j6
         self.actual_stamp = 0.0
         self.cap = None
+        self.depth = None                # aligned depth frame, millimetres
+        self.depth_stamp = 0.0
+        self.intrinsics = None           # (fx, fy, cx, cy)
 
         if args.source == "ros":
             # Images arrive from the RealSense node over a ROS topic.
@@ -176,6 +230,14 @@ class TeleopNode(Node):
                          "  sudo apt install -y ros-humble-cv-bridge")
             self.create_subscription(Image, args.topic, self.on_image, 1)
             self.get_logger().info(f"reading images from {args.topic}")
+
+            if args.use_depth:
+                from sensor_msgs.msg import CameraInfo
+                self.create_subscription(Image, DEPTH_TOPIC, self.on_depth, 1)
+                self.create_subscription(CameraInfo, INFO_TOPIC,
+                                         self.on_info, 1)
+                self.get_logger().info(
+                    f"using measured depth from {DEPTH_TOPIC}")
         else:
             # Read a plain webcam directly. Useful when the RealSense is not
             # available -- the laptop's built-in camera works once it has been
@@ -216,6 +278,7 @@ class TeleopNode(Node):
 
         self.create_subscription(JointState, "/joint_states", self.on_state, 10)
         self.pub = self.create_publisher(JointTrajectory, CONTROLLER_TOPIC, 10)
+        self.marker_pub = self.create_publisher(MarkerArray, "/fr5_workspace", 1)
 
     def on_image(self, msg):
         try:
@@ -225,6 +288,22 @@ class TeleopNode(Node):
         with self.lock:
             self.frame = img
             self.frame_stamp = time.time()
+
+    def on_depth(self, msg):
+        """Aligned depth frame. 16-bit, in millimetres, same size as colour."""
+        try:
+            img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+        except Exception:                                     # noqa: BLE001
+            return
+        with self.lock:
+            self.depth = img
+            self.depth_stamp = time.time()
+
+    def on_info(self, msg):
+        """Camera intrinsics, needed to turn a pixel plus a depth into metres."""
+        k = msg.k
+        if k[0] > 0:
+            self.intrinsics = (k[0], k[4], k[2], k[5])        # fx, fy, cx, cy
 
     def on_state(self, msg):
         # /joint_states is NOT published in j1..j6 order -- match by name.
@@ -236,6 +315,111 @@ class TeleopNode(Node):
             with self.lock:
                 self.actual = [found[n] for n in JOINTS]
                 self.actual_stamp = time.time()
+
+    def publish_markers(self, target=None):
+        """
+        Draw the safe workspace, and the point the tool is being sent to, in
+        RViz.
+
+        The limits were previously invisible: you only found one by hitting it
+        and reading a message. Shown as shapes, people simply stay inside them.
+        """
+        now = self.get_clock().now().to_msg()
+        arr = MarkerArray()
+
+        def base(idx, kind):
+            m = Marker()
+            m.header.frame_id = "base_link"
+            m.header.stamp = now
+            m.ns = "fr5_workspace"
+            m.id = idx
+            m.type = kind
+            m.action = Marker.ADD
+            m.pose.orientation.w = 1.0
+            return m
+
+        z_min, z_max = WORKSPACE["z_min"], WORKSPACE["z_max"]
+        r_max, r_min = WORKSPACE["r_max"], WORKSPACE["r_min"]
+        mid = (z_min + z_max) / 2000.0
+        height = (z_max - z_min) / 1000.0
+
+        # Outer reach limit
+        outer = base(0, Marker.CYLINDER)
+        outer.pose.position.z = mid
+        outer.scale = Vector3(x=2 * r_max / 1000.0, y=2 * r_max / 1000.0,
+                              z=height)
+        outer.color = ColorRGBA(r=0.25, g=0.55, b=0.95, a=0.07)
+        arr.markers.append(outer)
+
+        # The floor guard -- the limit that matters most
+        floor = base(1, Marker.CYLINDER)
+        floor.pose.position.z = z_min / 1000.0
+        floor.scale = Vector3(x=2 * r_max / 1000.0, y=2 * r_max / 1000.0,
+                              z=0.004)
+        floor.color = ColorRGBA(r=0.95, g=0.35, b=0.2, a=0.35)
+        arr.markers.append(floor)
+
+        # The column above the base, which is kept clear
+        inner = base(2, Marker.CYLINDER)
+        inner.pose.position.z = mid
+        inner.scale = Vector3(x=2 * r_min / 1000.0, y=2 * r_min / 1000.0,
+                              z=height)
+        inner.color = ColorRGBA(r=0.95, g=0.6, b=0.2, a=0.10)
+        arr.markers.append(inner)
+
+        # Where the tool is being commanded to go
+        dot = base(3, Marker.SPHERE)
+        if target is None:
+            dot.action = Marker.DELETE
+        else:
+            dot.pose.position = Point(x=target[0] / 1000.0,
+                                      y=target[1] / 1000.0,
+                                      z=target[2] / 1000.0)
+            dot.scale = Vector3(x=0.05, y=0.05, z=0.05)
+            dot.color = ColorRGBA(r=0.1, g=0.9, b=0.4, a=0.9)
+        arr.markers.append(dot)
+
+        self.marker_pub.publish(arr)
+
+    def hand_point(self, u_norm, v_norm, patch=7):
+        """
+        Turn a normalised image position into a metric 3D point, using the
+        measured depth and the camera intrinsics.
+
+        Returns (x, y, z) in metres in the camera frame -- x right, y down,
+        z away from the camera -- or None if there is no usable depth there.
+
+        A median over a small patch is used rather than the single pixel:
+        depth images have holes at edges and on dark or shiny surfaces, and a
+        hole reads as zero, which would otherwise look like "right at the
+        lens".
+        """
+        with self.lock:
+            depth = None if self.depth is None else self.depth
+            intr = self.intrinsics
+            fresh = (time.time() - self.depth_stamp) < 1.0
+        if depth is None or intr is None or not fresh:
+            return None
+
+        h, w = depth.shape[:2]
+        u = int(round(u_norm * w))
+        v = int(round(v_norm * h))
+        if not (0 <= u < w and 0 <= v < h):
+            return None
+
+        half = patch // 2
+        window = depth[max(0, v - half):v + half + 1,
+                       max(0, u - half):u + half + 1]
+        valid = window[window > 0]
+        if valid.size < 4:
+            return None
+
+        z = float(np.median(valid)) / 1000.0                  # mm -> m
+        if not 0.1 < z < 4.0:
+            return None
+
+        fx, fy, cx, cy = intr
+        return np.array([(u - cx) * z / fx, (v - cy) * z / fy, z])
 
     def grab(self):
         if self.cap is not None:
@@ -311,6 +495,90 @@ def hand_cylindrical(p):
     return rho, phi, p[1]
 
 
+def hand_measures(landmarks):
+    """
+    Measure the hand from MediaPipe Hands landmarks.
+
+    Returns (x, y, size, pinch):
+        x, y   wrist position in the frame, 0..1
+        size   palm width in frame units -- bigger means closer to the camera
+        pinch  thumb-to-index distance divided by hand size, so it means the
+               same whatever distance the hand is at
+
+    Palm width is used for size rather than, say, wrist-to-fingertip, because
+    it barely changes as the fingers move. Curl your fingers and the palm is
+    still the palm.
+    """
+    lm = landmarks.landmark
+
+    def pt(i):
+        return np.array([lm[i].x, lm[i].y])
+
+    wrist = pt(H_WRIST)
+    index_mcp = pt(H_INDEX_MCP)
+    pinky_mcp = pt(H_PINKY_MCP)
+    middle_mcp = pt(H_MIDDLE_MCP)
+
+    # Palm size: across the knuckles, and wrist to middle knuckle. Averaging
+    # the two keeps it steady as the hand rotates.
+    span = float(np.linalg.norm(index_mcp - pinky_mcp))
+    length = float(np.linalg.norm(middle_mcp - wrist))
+    size = 0.5 * (span + length)
+    if size < 1e-4:
+        return None
+
+    pinch = float(np.linalg.norm(pt(H_THUMB_TIP) - pt(H_INDEX_TIP))) / size
+
+    # Report the hand's centre rather than the wrist: it sits in the middle of
+    # what you see, so it feels like the thing you are moving.
+    cx, cy = (wrist + middle_mcp) / 2.0
+    return float(cx), float(cy), size, pinch
+
+
+def torso_yaw(world_landmarks):
+    """
+    Which way the operator's shoulders are facing, in radians.
+
+    Taken from the line between the two shoulders, projected onto the
+    horizontal plane. Turning the body changes it; moving an arm does not.
+
+    This deliberately uses WORLD coordinates, not the torso frame -- the torso
+    frame is built from these same landmarks, so body yaw is zero in it by
+    construction.
+    """
+    lm = np.array([[p.x, p.y, p.z] for p in world_landmarks.landmark])
+    across = lm[R_SHOULDER] - lm[L_SHOULDER]
+    # MediaPipe world coordinates have y vertical, so x-z is the ground plane.
+    if abs(across[0]) < 1e-6 and abs(across[2]) < 1e-6:
+        return None
+    return math.atan2(across[2], across[0])
+
+
+def arm_metrics(world_landmarks):
+    """
+    How far the hand is from the shoulder, and how high it is.
+
+    reach   straight-line shoulder-to-hand distance, in metres. Grows as the
+            elbow straightens and the arm pushes out, which is what the
+            operator feels as "extending".
+
+            Note that elbow-to-hand is the forearm and never changes length,
+            so it cannot drive anything. Shoulder-to-hand can.
+
+    height  how far the hand is above the shoulder, along the spine.
+    """
+    lm = np.array([[p.x, p.y, p.z] for p in world_landmarks.landmark])
+    frame = torso_frame(lm)
+    if frame is None:
+        return None
+    _, R = frame
+
+    arm = lm[R_WRIST] - lm[R_SHOULDER]
+    reach = float(np.linalg.norm(arm))
+    height = float(np.dot(arm, R[:, 1]))        # along the body's up axis
+    return reach, height
+
+
 def clamp_offset(delta, limit):
     """Clamp the per-axis offset from the neutral position."""
     hits = []
@@ -368,10 +636,19 @@ class App:
         self.node = node
         self.args = args
 
-        self.pose = mp_pose.Pose(model_complexity=1,
-                                 min_detection_confidence=0.6,
-                                 min_tracking_confidence=0.6,
-                                 smooth_landmarks=True)
+        self.use_hands = (args.tracker == "hands")
+        if self.use_hands:
+            self.pose = None
+            self.hands = mp_hands.Hands(max_num_hands=1,
+                                        model_complexity=1,
+                                        min_detection_confidence=0.6,
+                                        min_tracking_confidence=0.6)
+        else:
+            self.hands = None
+            self.pose = mp_pose.Pose(model_complexity=1,
+                                     min_detection_confidence=0.6,
+                                     min_tracking_confidence=0.6,
+                                     smooth_landmarks=True)
 
         self.enabled = False
         self.neutral_hand = None       # hand position at capture, metres
@@ -380,6 +657,19 @@ class App:
         self.neutral_cyl = None        # tool (radius, angle, height) at capture
         self.neutral_hand_cyl = None   # hand (reach, azimuth, height) at capture
         self.last_phi = None           # last good hand azimuth
+        self.hand_smooth = None        # low-passed hand position
+        self.held_target = None        # target held through the deadband
+        self.yaw = None                # smoothed torso yaw
+        self.reach = None              # smoothed shoulder-to-hand distance
+        self.height = None             # smoothed hand height above shoulder
+        self.neutral_torso = None      # (yaw, reach, height) at capture
+        self.hand_m = None             # smoothed (x, y, size) from Hands
+        self.pinch_closed = False      # pinch state, with hysteresis
+        self.neutral_hand_m = None     # (x, y, size) at capture
+        self.hand_xyz = None           # smoothed metric hand point, metres
+        self.neutral_xyz = None        # metric hand point at capture
+        self.depth_ok = False          # is measured depth available
+        self._home_warned = False      # has the away-from-home warning fired
         self.command = None            # the joint command we are sending
         self.filtered = None
         self.last_desired = None       # previous IK result, for flip detection
@@ -414,6 +704,8 @@ class App:
         mframe.pack(fill="x", padx=10, pady=(6, 2))
         self.mode = tk.StringVar(value=args.mode)
         for label, value, hint in (
+                ("Torso  (turn your body -> base rotation)", "torso",
+                 "arm does reach and height; body does rotation"),
                 ("Cylindrical  (arm swing -> base rotation)", "cylindrical",
                  "your arm's sweep drives j1 one-for-one"),
                 ("Cartesian  (hand XYZ -> tool XYZ)", "cartesian",
@@ -427,7 +719,7 @@ class App:
                      font=("TkDefaultFont", 8)).pack(side="left")
 
         # ---- cylindrical controls
-        self.cyl_frame = ttk.LabelFrame(root, text=" cylindrical ")
+        self.cyl_frame = ttk.LabelFrame(root, text=" rotation and reach ")
         self.cyl_frame.pack(fill="x", padx=10, pady=4)
 
         cbox = ttk.Frame(self.cyl_frame)
@@ -573,6 +865,8 @@ class App:
                       f"the physical e-stop is still the real stop",
                  fg="#666", font=("TkDefaultFont", 9)).pack(pady=(0, 8))
 
+        if self.use_hands:
+            mframe.pack_forget()
         self.on_mode()
         self.tick()
 
@@ -585,13 +879,22 @@ class App:
             self.reason = "no /joint_states - is the robot launched?"
             return
         if self.hand is None:
-            self.reason = "cannot see your arm - step back into frame"
+            self.reason = ("cannot see your hand - hold it up to the camera"
+                           if self.use_hands
+                           else "cannot see your arm - step back into frame")
             return
 
         T = K.fk(actual)
         self.neutral_hand = np.array(self.hand, dtype=float)
         self.neutral_pos = T[:3, 3].copy()
         self.neutral_rot = T[:3, :3].copy()
+        self.held_target = None
+        self.neutral_hand_m = (None if self.hand_m is None
+                               else tuple(self.hand_m))
+        self.neutral_xyz = (None if self.hand_xyz is None
+                            else self.hand_xyz.copy())
+        self.neutral_torso = (None if self.yaw is None
+                              else (self.yaw, self.reach, self.height))
         self.neutral_cyl = to_cylindrical(self.neutral_pos)
         self.neutral_hand_cyl = hand_cylindrical(self.neutral_hand)
         self.last_phi = self.neutral_hand_cyl[1]
@@ -615,13 +918,49 @@ class App:
         """Show only the controls that apply to the selected mode."""
         self.cyl_frame.pack_forget()
         self.cart_frame.pack_forget()
-        if self.mode.get() == "cylindrical":
+        if self.use_hands or self.mode.get() in ("torso", "cylindrical"):
             self.cyl_frame.pack(fill="x", padx=10, pady=4,
                                 before=self.pos_frame)
         else:
             self.cart_frame.pack(fill="x", padx=10, pady=6,
                                  before=self.pos_frame)
         self.reason = f"{self.mode.get()} mode - capture a neutral pose"
+
+    def check_home(self, actual, state_fresh):
+        """
+        Warn when the arm is parked somewhere awkward.
+
+        Capturing a neutral pose from a stretched-out position is the single
+        most common way to make this thing feel broken: every direction hits a
+        limit immediately. So until the arm is near home, the capture button
+        is disabled and the home button is highlighted.
+
+        It does NOT home by itself. Moving a 22 kg arm because a program
+        started is not a decision software should take -- GO TO HOME is a
+        joint-space move that does not avoid obstacles, so a person has to
+        look at the robot and press it.
+        """
+        if not state_fresh or self.enabled or self.homing:
+            return
+
+        off = max(abs(math.degrees(a) - h) for a, h in zip(actual, HOME_DEG))
+        near_home = off < self.args.home_tolerance
+
+        if near_home:
+            if self._home_warned:
+                self._home_warned = False
+                self.home_btn.config(bg="#4a6fa5", text="0.  GO TO HOME POSE")
+                self.cap_btn.config(state="normal")
+                self.reason = "at home - capture a neutral pose"
+        elif not self._home_warned:
+            self._home_warned = True
+            self.home_btn.config(bg="#c0392b",
+                                 text=f"0.  ARM IS {off:.0f} deg FROM HOME "
+                                      f"-  PRESS TO HOME IT")
+            if not self.args.allow_any_start:
+                self.cap_btn.config(state="disabled")
+            self.reason = ("the arm is away from home - check the path is "
+                           "clear, then press the red button")
 
     def lead_for(self, dt):
         """
@@ -675,7 +1014,8 @@ class App:
             self.reason = "no /joint_states - is the robot launched?"
             return
         if not self.tracking:
-            self.reason = "cannot see your arm - step back into frame"
+            self.reason = ("cannot see your hand" if self.use_hands
+                           else "cannot see your arm - step back into frame")
             return
 
         # Start from where the arm actually is, in degrees.
@@ -696,10 +1036,12 @@ class App:
 
     def quit(self):
         self.disengage()
-        try:
-            self.pose.close()
-        except Exception:                                     # noqa: BLE001
-            pass
+        for solution in (self.pose, self.hands):
+            try:
+                if solution is not None:
+                    solution.close()
+            except Exception:                                 # noqa: BLE001
+                pass
         cv2.destroyAllWindows()
         self.root.destroy()
 
@@ -718,7 +1060,12 @@ class App:
         # ---------------- vision
         self.hand = None
         self.tracking = False
-        if image_fresh:
+        if not image_fresh:
+            self.hand_smooth = None
+            self.yaw = self.reach = self.height = None
+        if image_fresh and self.use_hands:
+            self.tick_hands(frame, dt)
+        elif image_fresh:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             rgb.flags.writeable = False
             res = self.pose.process(rgb)
@@ -728,9 +1075,37 @@ class App:
                 needed = (R_SHOULDER, R_ELBOW, R_WRIST,
                           L_SHOULDER, R_HIP, L_HIP)
                 if all(vis[i] > 0.6 for i in needed):
+                    # --- torso-mode quantities, smoothed the same way.
+                    # Body yaw comes from the two shoulder landmarks, which
+                    # are far apart and well tracked, so it is much steadier
+                    # than anything derived from the hand alone.
+                    yaw = torso_yaw(res.pose_world_landmarks)
+                    met = arm_metrics(res.pose_world_landmarks)
+                    if yaw is not None and met is not None:
+                        a = 1.0 - math.exp(-2.0 * math.pi *
+                                           self.args.hand_smooth_hz * dt)
+                        reach, height = met
+                        if self.yaw is None:
+                            self.yaw, self.reach, self.height = yaw, reach, height
+                        else:
+                            # Wrap the yaw difference so it never jumps 360.
+                            self.yaw += a * ((yaw - self.yaw + math.pi)
+                                             % (2 * math.pi) - math.pi)
+                            self.reach += a * (reach - self.reach)
+                            self.height += a * (height - self.height)
+
                     p = hand_in_torso_frame(res.pose_world_landmarks)
                     if p is not None:
-                        self.hand = p
+                        # Low-pass the measured position before anything uses
+                        # it. Everything downstream -- mapping, IK, the
+                        # deadband -- then works from a steady number.
+                        if self.hand_smooth is None:
+                            self.hand_smooth = np.array(p, dtype=float)
+                        else:
+                            a = 1.0 - math.exp(-2.0 * math.pi *
+                                               self.args.hand_smooth_hz * dt)
+                            self.hand_smooth += a * (p - self.hand_smooth)
+                        self.hand = self.hand_smooth.copy()
                         self.tracking = True
 
             # Build the view FIRST, then draw on it.
@@ -758,7 +1133,9 @@ class App:
         if self.enabled:
             if not self.tracking:
                 self.enabled = False
-                self.reason = "FROZE: lost sight of your arm"
+                self.reason = ("FROZE: lost sight of your hand"
+                               if self.use_hands
+                               else "FROZE: lost sight of your arm")
                 self.go.config(bg="#2d7a3e", text=self.idle_text)
             elif not state_fresh:
                 self.enabled = False
@@ -811,7 +1188,134 @@ class App:
             self.scale_lab.config(text=f"{scale:.2f} x")
             off_hits = []
 
-            if self.mode.get() == "cylindrical":
+            if self.use_hands:
+                # ---- HANDS
+                #
+                # Everything comes from the hand itself, close to the camera,
+                # where the landmarks are precise:
+                #
+                #   across the frame  -> base rotation
+                #   up the frame      -> tool height
+                #   apparent size     -> reach  (bigger = nearer = further out)
+                #
+                # Size is a ratio against the size at capture, so it is
+                # independent of hand size and camera.
+                if self.neutral_hand_m is None:
+                    raw = self.neutral_pos
+                    self.cyl_readout = None
+                    off_hits.append("recapture neutral")
+                elif (self.args.use_depth and self.depth_ok
+                      and self.neutral_xyz is not None):
+                    # ---- measured 3D hand position
+                    #
+                    # The depth camera reports the real distance to the hand,
+                    # so all three axes are measurements in metres rather than
+                    # inferences from how big the hand looks. Reach in
+                    # particular stops being a guess.
+                    r0, th0, z0 = self.neutral_cyl
+                    d = (self.hand_xyz - self.neutral_xyz) * 1000.0 * scale
+
+                    # camera frame: x right, y DOWN, z away from the lens
+                    lateral, drop, away = d[0], d[1], d[2]
+
+                    d_theta = (math.atan2(-lateral, max(r0, 1.0))
+                               * float(self.azim_gain.get()))
+                    if self.azim_inv.get():
+                        d_theta = -d_theta
+                    d_theta = clamp(d_theta,
+                                    -math.radians(self.args.max_azimuth),
+                                    math.radians(self.args.max_azimuth))
+                    if abs(d_theta) >= math.radians(self.args.max_azimuth) - 1e-6:
+                        off_hits.append("rotation")
+
+                    # coming towards the lens means extending outwards
+                    d_r = -away
+                    if self.radial_inv.get():
+                        d_r = -d_r
+                    d_z = -drop
+
+                    d_r = clamp(d_r, -self.args.max_offset, self.args.max_offset)
+                    d_z = clamp(d_z, -self.args.max_offset, self.args.max_offset)
+
+                    raw = from_cylindrical(r0 + d_r, th0 + d_theta, z0 + d_z)
+                    self.cyl_readout = (r0 + d_r, math.degrees(th0 + d_theta),
+                                        z0 + d_z)
+                else:
+                    x0, y0, size0 = self.neutral_hand_m
+                    x, y, size = self.hand_m
+                    r0, th0, z0 = self.neutral_cyl
+
+                    d_theta = (math.radians(DEG_PER_FRAME_WIDTH) * (x - x0)
+                               * float(self.azim_gain.get()))
+                    if not self.azim_inv.get():
+                        # Mirrored view: moving your hand right on screen
+                        # means x decreases, so flip for an intuitive match.
+                        d_theta = -d_theta
+                    d_theta = clamp(d_theta,
+                                    -math.radians(self.args.max_azimuth),
+                                    math.radians(self.args.max_azimuth))
+                    if abs(d_theta) >= math.radians(self.args.max_azimuth) - 1e-6:
+                        off_hits.append("rotation")
+
+                    # log2 so that doubling and halving move the same amount
+                    ratio = max(size / max(size0, 1e-6), 1e-3)
+                    d_r = (math.log2(ratio) * MM_PER_SIZE_DOUBLING * scale)
+                    if self.radial_inv.get():
+                        d_r = -d_r
+
+                    # image y grows downwards, so raising the hand lowers y
+                    d_z = -(y - y0) * MM_PER_FRAME_HEIGHT * scale
+
+                    d_r = clamp(d_r, -self.args.max_offset, self.args.max_offset)
+                    d_z = clamp(d_z, -self.args.max_offset, self.args.max_offset)
+
+                    raw = from_cylindrical(r0 + d_r, th0 + d_theta, z0 + d_z)
+                    self.cyl_readout = (r0 + d_r, math.degrees(th0 + d_theta),
+                                        z0 + d_z)
+            elif self.mode.get() == "torso":
+                # ---- TORSO
+                #
+                # Base rotation follows the BODY, not the arm. Turn your
+                # shoulders and the base turns with you; swing your arm and it
+                # does not. That separation is the point: reach and height are
+                # the arm's job, rotation is the body's.
+                #
+                # Measured against hand azimuth, body yaw is NOT less noisy
+                # -- both come out around 0.85 deg of jitter for 4 mm of
+                # landmark error. What it buys is independence: arm noise and
+                # arm movement cannot rotate the base at all, so holding your
+                # body still holds the base still no matter what your arm is
+                # doing. The deadband deals with the remaining jitter.
+                if self.neutral_torso is None or self.yaw is None:
+                    raw = self.neutral_pos
+                    self.cyl_readout = None
+                    off_hits.append("recapture neutral")
+                else:
+                    yaw0, reach0, h0 = self.neutral_torso
+                    r0, th0, z0 = self.neutral_cyl
+
+                    d_theta = ((self.yaw - yaw0 + math.pi) % (2 * math.pi)
+                               - math.pi) * float(self.azim_gain.get())
+                    if self.azim_inv.get():
+                        d_theta = -d_theta
+                    d_theta = clamp(d_theta,
+                                    -math.radians(self.args.max_azimuth),
+                                    math.radians(self.args.max_azimuth))
+                    if abs(d_theta) >= math.radians(self.args.max_azimuth) - 1e-6:
+                        off_hits.append("rotation")
+
+                    d_r = (self.reach - reach0) * 1000.0 * scale
+                    d_z = (self.height - h0) * 1000.0 * scale
+                    if self.radial_inv.get():
+                        d_r = -d_r
+
+                    d_r = clamp(d_r, -self.args.max_offset, self.args.max_offset)
+                    d_z = clamp(d_z, -self.args.max_offset, self.args.max_offset)
+
+                    raw = from_cylindrical(r0 + d_r, th0 + d_theta, z0 + d_z)
+                    self.cyl_readout = (r0 + d_r, math.degrees(th0 + d_theta),
+                                        z0 + d_z)
+            elif self.mode.get() == "cylindrical":
                 # ---- CYLINDRICAL
                 #
                 # Your arm sweeps in an arc about your shoulder; the robot
@@ -873,7 +1377,17 @@ class App:
                 raw = self.neutral_pos + delta_mm
                 self.cyl_readout = None
 
-            self.target_pos, box_hits = clamp_workspace(raw)
+            target, box_hits = clamp_workspace(raw)
+
+            # Deadband: keep the previous target until the new one has moved
+            # far enough to be a real movement rather than measurement noise.
+            if self.held_target is None:
+                self.held_target = target
+            elif float(np.linalg.norm(target - self.held_target)) > \
+                    self.args.deadband:
+                self.held_target = target
+
+            self.target_pos = self.held_target
             self.hits = off_hits + box_hits
 
             if self.enabled and state_fresh:
@@ -982,7 +1496,9 @@ class App:
         elif not image_fresh:
             self.status.config(text="no camera images", fg="#b26a00")
         elif not self.tracking:
-            self.status.config(text="cannot see your arm", fg="#b26a00")
+            self.status.config(
+                text="cannot see your hand" if self.use_hands
+                else "cannot see your arm", fg="#b26a00")
         elif not state_fresh:
             self.status.config(text="no /joint_states", fg="#b26a00")
         elif self.neutral_pos is None:
@@ -991,7 +1507,109 @@ class App:
             self.status.config(text="ready", fg="#1a7f37")
 
         self.detail.config(text=self.reason)
+
+        # Markers at a few Hz -- RViz does not need them at the loop rate.
+        self._marker_count = getattr(self, "_marker_count", 0) + 1
+        if self._marker_count % 5 == 0:
+            self.node.publish_markers(
+                self.target_pos if self.enabled else None)
+
+        self.check_home(actual, state_fresh)
         self.root.after(int(1000.0 / LOOP_HZ), self.tick)
+
+    def tick_hands(self, frame, dt):
+        """Vision for MediaPipe Hands: measure, smooth, and draw."""
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb.flags.writeable = False
+        res = self.hands.process(rgb)
+
+        view = cv2.flip(frame, 1)
+        view = cv2.resize(view,
+                          (960, int(960 * view.shape[0] / view.shape[1])))
+        view = np.ascontiguousarray(view)
+        h, w = view.shape[:2]
+
+        if res.multi_hand_landmarks:
+            lms = res.multi_hand_landmarks[0]
+            m = hand_measures(lms)
+            if m is not None:
+                x, y, size, pinch = m
+
+                a = 1.0 - math.exp(-2.0 * math.pi *
+                                   self.args.hand_smooth_hz * dt)
+                if self.hand_m is None:
+                    self.hand_m = np.array([x, y, size], dtype=float)
+                else:
+                    self.hand_m += a * (np.array([x, y, size]) - self.hand_m)
+
+                # Hysteresis on the pinch: one threshold to close, a higher
+                # one to open. A single threshold would chatter on and off
+                # while the fingers hover near it.
+                if self.pinch_closed and pinch > PINCH_OFF:
+                    self.pinch_closed = False
+                elif not self.pinch_closed and pinch < PINCH_ON:
+                    self.pinch_closed = True
+
+                self.tracking = True
+                self.hand = self.hand_m.copy()
+
+                # Measured 3D position, when the depth stream is up. The
+                # wrist is sampled rather than the palm centre: it sits on a
+                # flatter, broader part of the hand, so the depth patch is
+                # less likely to straddle an edge and read the wall behind.
+                self.depth_ok = False
+                if self.args.use_depth:
+                    lmw = lms.landmark[H_WRIST]
+                    pt3 = self.node.hand_point(lmw.x, lmw.y)
+                    if pt3 is not None:
+                        if self.hand_xyz is None:
+                            self.hand_xyz = pt3
+                        else:
+                            self.hand_xyz += a * (pt3 - self.hand_xyz)
+                        self.depth_ok = True
+
+            # draw the skeleton, mirrored to match the view
+            pts = [(int((1.0 - p.x) * w), int(p.y * h)) for p in lms.landmark]
+            for a_i, b_i in mp_hands.HAND_CONNECTIONS:
+                cv2.line(view, pts[a_i], pts[b_i], (90, 200, 120), 2,
+                         cv2.LINE_AA)
+            for i, p in enumerate(pts):
+                r = 7 if i in (H_THUMB_TIP, H_INDEX_TIP) else 4
+                cv2.circle(view, p, r, (255, 255, 255), -1, cv2.LINE_AA)
+
+            if self.tracking:
+                col = (60, 200, 90) if self.pinch_closed else (200, 160, 60)
+                cv2.line(view, pts[H_THUMB_TIP], pts[H_INDEX_TIP], col, 3,
+                         cv2.LINE_AA)
+                cv2.putText(view,
+                            "PINCHED" if self.pinch_closed else "open",
+                            (20, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2,
+                            cv2.LINE_AA)
+        else:
+            self.hand_m = None
+            self.hand_xyz = None
+            self.depth_ok = False
+            self.pinch_closed = False
+            cv2.putText(view, "NO HAND", (20, 44),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (60, 60, 230), 2,
+                        cv2.LINE_AA)
+
+        if self.tracking:
+            cv2.putText(view, "TRACKED", (20, 44), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9, (80, 220, 120), 2, cv2.LINE_AA)
+            if self.args.use_depth:
+                if self.depth_ok:
+                    txt = f"depth {self.hand_xyz[2] * 100:.0f} cm"
+                    col = (80, 220, 120)
+                else:
+                    txt = "no depth here"
+                    col = (60, 160, 230)
+                cv2.putText(view, txt, (20, 120),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, col, 2,
+                            cv2.LINE_AA)
+
+        cv2.imshow("hand teleop  -  right arm", view)
+        cv2.waitKey(1)
 
     # --- drawing ----------------------------------------------------------
     def draw(self, img, landmarks):
@@ -1040,11 +1658,24 @@ def main():
                     help="image topic when --source ros")
     ap.add_argument("--device", type=int, default=0,
                     help="camera index when --source webcam (try 1 if 0 fails)")
-    ap.add_argument("--mode", choices=("cylindrical", "cartesian"),
-                    default="cylindrical",
-                    help="cylindrical maps your arm's sweep onto base "
-                         "rotation; cartesian maps hand XYZ to tool XYZ "
-                         "(default cylindrical)")
+    ap.add_argument("--tracker", choices=("hands", "pose"), default="hands",
+                    help="hands: track the hand itself, close to the camera, "
+                         "with pinch-to-move (default, most precise). "
+                         "pose: track the whole arm from a distance")
+    ap.add_argument("--no-depth", dest="use_depth", action="store_false",
+                    default=True,
+                    help="do not use the depth camera; fall back to inferring "
+                         "distance from how big the hand looks")
+    ap.add_argument("--no-pinch", dest="pinch", action="store_false",
+                    default=True,
+                    help="in hands mode, use the button instead of pinching")
+    ap.add_argument("--mode",
+                    choices=("torso", "cylindrical", "cartesian"),
+                    default="torso",
+                    help="torso: body turn drives the base, arm drives reach "
+                         "and height (default, steadiest). cylindrical: arm "
+                         "sweep drives the base. cartesian: hand XYZ to "
+                         "tool XYZ")
     ap.add_argument("--max-azimuth", type=float, default=MAX_AZIMUTH_DEG,
                     help=f"max base rotation from neutral, degrees "
                          f"(default {MAX_AZIMUTH_DEG:.0f})")
@@ -1052,6 +1683,18 @@ def main():
                     help=f"max millimetres the tool may stray from the "
                          f"neutral position, per axis "
                          f"(default {MAX_OFFSET_MM:.0f})")
+    ap.add_argument("--home-tolerance", type=float, default=15.0,
+                    help="degrees from the home pose before the arm counts as "
+                         "out of position (default 15)")
+    ap.add_argument("--allow-any-start", action="store_true",
+                    help="allow capturing a neutral pose even when the arm is "
+                         "far from home. Usually a bad idea")
+    ap.add_argument("--hand-smooth-hz", type=float, default=HAND_SMOOTH_HZ,
+                    help=f"smoothing on the measured hand position, lower is "
+                         f"steadier (default {HAND_SMOOTH_HZ:.1f})")
+    ap.add_argument("--deadband", type=float, default=DEADBAND_MM,
+                    help=f"ignore target movement smaller than this, in mm "
+                         f"(default {DEADBAND_MM:.0f})")
     ap.add_argument("--max-lead", type=float, default=MAX_LEAD_DEG,
                     help=f"max degrees the command may get ahead of the real "
                          f"arm (default {MAX_LEAD_DEG:.1f})")

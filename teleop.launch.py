@@ -33,6 +33,7 @@ from launch_ros.actions import Node
 WS = os.path.expanduser("~/fairino_380_ws")
 
 ARGUMENTS = [
+    ("mode", "torso", "torso | cylindrical | cartesian"),
     ("source", "ros", "ros = RealSense node; webcam = plain camera, no RealSense"),
     ("device", "0", "camera index when source:=webcam"),
     ("dry_run", "false", "compute everything, publish nothing"),
@@ -41,6 +42,8 @@ ARGUMENTS = [
     ("max_speed", "5.0", "degrees per second per joint"),
     ("filter_hz", "2.0", "low-pass cutoff, lower is smoother"),
     ("max_jump", "30.0", "reject IK solutions needing more than this"),
+    ("hand_smooth_hz", "2.5", "smoothing on the measured hand position"),
+    ("deadband", "12.0", "ignore target movement smaller than this, mm"),
     ("width", "640", "colour stream width"),
     ("height", "360", "colour stream height"),
     ("fps", "15", "colour stream rate"),
@@ -77,12 +80,15 @@ def launch_setup(context, *_args, **_kwargs):
 
     cmd = [
         "python3", os.path.join(WS, "hand_teleop.py"),
+        "--mode", arg("mode"),
         "--source", arg("source"),
         "--device", arg("device"),
         "--scale", arg("scale"),
         "--max-speed", arg("max_speed"),
         "--filter-hz", arg("filter_hz"),
         "--max-jump", arg("max_jump"),
+        "--hand-smooth-hz", arg("hand_smooth_hz"),
+        "--deadband", arg("deadband"),
     ]
     if is_true(arg("dry_run")):
         cmd.append("--dry-run")

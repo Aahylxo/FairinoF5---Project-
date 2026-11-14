@@ -8,6 +8,21 @@ Intel RealSense D455.
 
 ---
 
+> # ▶ New here? Read [`FOLLOW_ALONG.md`](FOLLOW_ALONG.md) instead.
+>
+> That document takes a Windows laptop with **nothing installed** and walks it, step by
+> numbered step, to a robot arm controlled by hand movement. Every command, every
+> expected result, and what to do when something fails.
+>
+> **Sections A–E of it need no robot at all** — the whole system runs in simulation on
+> any Windows laptop with a RealSense camera.
+>
+> **This document is the reference behind it:** why each step exists, how the system
+> works, the robot's parameters, and the full troubleshooting tables. Read it when you
+> want to understand something, not when you want to get running.
+
+---
+
 ## Contents
 
 **[PART 0 — MAIN INSTRUCTIONS](#part-0--main-instructions)** ← always start here
@@ -53,6 +68,8 @@ Intel RealSense D455.
   - [5.6 Test in three stages](#56-test-in-three-stages--do-not-skip-stage-2)
 - *Method 2 — Cartesian IK:*
   - [5.7 Cartesian hand teleoperation](#57-method-2--cartesian-hand-teleoperation)
+  - [5.8 Trackers, modes and tuning](#58-trackers-modes-and-tuning)
+    - [The open-loop oscillation, and the fix](#-the-open-loop-oscillation-and-the-fix) ← read before running on real hardware
 
 **[QUICK START — teleoperation in simulation](#quick-start--teleoperation-in-simulation)**
 
@@ -79,14 +96,29 @@ ros2 launch fairino5_v6_moveit2_config demo.launch.py
 ```bash
 # terminal 2 -- camera + vision + control
 source /opt/ros/humble/setup.bash
-ros2 launch ~/fairino_380_ws/teleop.launch.py
+ros2 launch ~/fairino_380_ws/teleop.launch.py deadband:=20.0
 ```
 
 Then, in the window that opens: **GO TO HOME POSE** → wait for `at home` →
-**CAPTURE NEUTRAL POSE** → **CLICK TO START MOVING** → move your hand.
+**CAPTURE NEUTRAL POSE** → **CLICK TO START MOVING** → pinch thumb and index, and move
+your hand.
 
-That is Method 2 (Part 5.7), and it is the one to demonstrate. The longer sequence below
-is Method 1, which uses five terminals and is kept for comparison.
+In RViz, once: **Add → By topic → `/fr5_workspace` → MarkerArray**, then File → Save
+Config. The green sphere is your hand's target.
+
+Two variants worth knowing:
+
+```bash
+# whole-arm tracking -- stand back, both shoulders and hips in frame
+ros2 launch ~/fairino_380_ws/teleop.launch.py tracker:=pose deadband:=20.0
+
+# on the REAL robot -- hold-to-move, half scale, supervisor present
+ros2 launch ~/fairino_380_ws/teleop.launch.py hold:=true scale:=0.5
+```
+
+That is Method 2 (Parts 5.7 and 5.8), and it is the one to demonstrate. **Before the
+first run on real hardware, read the oscillation note in Part 5.8.** The longer sequence
+below is Method 1, which uses five terminals and is kept for comparison.
 
 ---
 
@@ -1681,6 +1713,240 @@ Same three stages as Method 1 (Part 5.6), and stage 2 is still not skippable:
 
 ---
 ---
+---
+
+## 5.8 Trackers, modes and tuning
+
+Method 2 grew a lot during testing. This section is the reference for every option and
+why it exists.
+
+### Two trackers
+
+Set with `tracker:=`.
+
+| | `hands` (default) | `pose` |
+|---|---|---|
+| What it watches | your hand, close to the camera | your whole arm, from ~2 m |
+| Landmarks | 21, on the hand | 33 body, of which 6 are used |
+| Where you stand | sitting, hand 40–60 cm from the lens | standing back, torso in frame |
+| To move | **pinch** thumb and index | hold the button |
+| Mapping modes | its own, fixed | torso / cylindrical / cartesian |
+
+**`hands` is more precise** because the hand fills the frame instead of being a few dozen
+pixels across the room. **`pose` looks better on video** because your whole arm is
+visibly driving the robot.
+
+#### How `hands` measures
+
+| Quantity | How |
+|---|---|
+| Position | midpoint of wrist and middle knuckle — the palm centre. Chosen because it barely moves when the fingers curl, so pinching does not also shift your position |
+| Size | average of knuckle span and wrist-to-knuckle length. Used as a distance proxy when depth is unavailable |
+| Pinch | thumb-tip to index-tip distance **divided by hand size**, so the same gesture reads the same at any distance. Closes below 0.45, opens above 0.70 — two thresholds so it cannot chatter |
+| Distance | sampled from the depth frame at the wrist (see below) |
+
+### Three mapping modes (`pose` tracker only)
+
+Set with `mode:=`, or the radio buttons in the panel.
+
+**`torso` (default)** — body turn drives the base; the arm drives reach and height.
+
+```
+turn your shoulders        -> base rotates
+push your hand towards the camera -> arm extends
+raise / lower your hand    -> tool up / down
+```
+
+Swinging your arm does **not** rotate the base. That separation is the point: rotation is
+the body's job, reach and height are the arm's.
+
+Reach uses **shoulder-to-hand** distance, not elbow-to-hand. Your forearm is a fixed
+length and cannot drive anything; shoulder-to-hand grows as the elbow straightens, which
+is what "extending" feels like.
+
+Measured honestly: body yaw is **not** less noisy than hand azimuth — both come out
+around 0.85° of jitter for 4 mm of landmark error. What it buys is **independence**. Arm
+movement and arm noise cannot rotate the base at all.
+
+**`cylindrical`** — arm swing drives base rotation, one for one.
+
+Your arm sweeps in an arc about your shoulder; the robot sweeps in an arc about its base.
+Matching them directly gives **±90°** of base rotation against Cartesian's **±30°** —
+about three times the range. Verified: a 60° arm swing produces exactly 60° at j1.
+
+**`cartesian`** — hand XYZ maps to tool XYZ in straight lines.
+
+The original mapping. Base rotation is driven by a sideways offset capped at ±300 mm,
+which at a 507 mm radius is only ±30°. Kept for comparison; the other two are better.
+
+### Using the depth camera
+
+On by default (`use_depth:=true`), `hands` tracker only.
+
+The depth stream runs at 480×270×15 and is **aligned to colour**, so a colour pixel and a
+depth pixel are the same point in space. A hand landmark's pixel is looked up directly in
+the depth frame, and with the camera intrinsics that becomes a true metric 3D position.
+
+A median over a 7×7 patch is used, not a single pixel: depth images have holes at edges
+and on dark or shiny surfaces, and a hole reads as **zero**, which would otherwise look
+like "right at the lens".
+
+| Reach jitter, hand at 50 cm | |
+|---|---|
+| inferred from apparent hand size | 18.5 mm |
+| **measured depth** | **~2 mm** |
+
+About **9× better** on the axis that was worst — and the mapping becomes metric: move your
+hand 10 cm, the tool moves 100 mm × scale.
+
+**The D455 cannot see closer than about 40–50 cm.** Inside that the overlay says
+`no depth here` and it falls back to the size estimate automatically.
+
+### The four filters
+
+They sit at different points in the chain and catch different things. One alone is not
+enough.
+
+| | Where | Catches |
+|---|---|---|
+| `hand_smooth_hz` | on the raw measurement | landmark and torso-frame noise |
+| `deadband` | on the target | the residual drift a filter cannot remove |
+| `filter_hz` | after the IK | jitter the IK itself introduces |
+| `max_speed` | at the output | everything else, bounded by physics |
+
+**Why the deadband exists.** A filter only *reduces* noise — it never reaches zero, so
+the target creeps forever and the robot faithfully follows. A deadband sets a floor:
+below it, nothing happens at all. Measured with 3 mm of landmark noise, holding still:
+
+```
+no filtering                 3.07 mm wander,  6.65 mm/frame
+smoothing only               1.69 mm wander,  2.55 mm/frame
+smoothing + 12 mm deadband   0.00 mm wander,  0.00 mm/frame
+```
+
+That is what makes "holding still" actually still.
+
+### ⚠ The open-loop oscillation, and the fix
+
+**On real hardware the arm shook in place and had to be emergency-stopped.** Worth
+understanding, because simulation cannot reproduce it.
+
+The command was rate-limited from its **own previous value**, not from where the arm
+actually was. In simulation the mock arm reaches every commanded position instantly, so
+the two never diverge. On real hardware the arm lags — and the command marched on
+regardless. Each new goal then asked the robot to close the whole accumulated gap within
+one cycle.
+
+Simulated, with the arm stalled 2 s then following, speed limit 5 °/s:
+
+| | command lead | velocity demanded |
+|---|---|---|
+| open-loop | unbounded | **80 °/s** |
+| fixed 2.5° clamp | 2.5° | 25 °/s |
+| **derived from the speed limit** | **0.60°** | **6.0 °/s** |
+
+Sixteen times the limit. The arm accelerates hard, overshoots, is corrected, overshoots
+back — shaking in place.
+
+**Two fixes, both in `hand_teleop.py`:**
+
+- **Lead clamp.** The command may never sit more than `max_speed × horizon` ahead of the
+  real arm, computed from the speed setting. That bounds the demanded velocity to roughly
+  the limit you set.
+- **Following check.** If the arm falls more than 8° behind, it stops by itself and says
+  `STOPPED: the arm is not following`. Previously nothing would have stopped it.
+
+Homing has the same guards.
+
+**Also fixed at the same time:** `ros2_controllers.yaml` had `update_rate: 100` while the
+driver declares an 8 ms (125 Hz) ServoJ cycle. Now 125.
+
+### Configuration-flip rejection
+
+Several joint solutions reach the same tool pose, and the nearest can still be a different
+arm configuration — elbow up instead of down. Executing that swings the whole arm through
+a wide arc to reach the same point.
+
+The check compares against the **previous frame's IK result**, not against the current
+command. Comparing to the command would make any sustained movement look like a flip,
+because the command deliberately lags; an earlier version did exactly that and froze the
+arm a second or two into every move. Over 480 frames of simulated continuous motion:
+**0 false refusals, worst frame-to-frame joint change 2.5°**.
+
+### Workspace shown in RViz
+
+`hand_teleop.py` publishes markers on `/fr5_workspace`. Add them once in RViz:
+**Add → By topic → `/fr5_workspace` → MarkerArray**, then **File → Save Config**.
+
+| Marker | Meaning |
+|---|---|
+| blue translucent cylinder | the reach limit |
+| red disc | the floor guard |
+| amber inner cylinder | the column above the base, kept clear |
+| **green sphere** | the live target — where your hand is sending the tool |
+
+The sphere is the useful one. The gap between it and the flange **is the lag**: the rate
+limiter means the sphere leads and the arm follows. Flange sitting inside the sphere means
+it is keeping up. Sphere pressed against the blue cylinder means you are at the reach
+limit.
+
+Before this, the limits were invisible walls you discovered by hitting them.
+
+### Home-position check
+
+If the arm is more than 15° from home, the home button turns **red** and reads
+`ARM IS nn deg FROM HOME`, and **CAPTURE NEUTRAL is disabled** until it is homed.
+
+Capturing a neutral pose while stretched out is the single most common way to make this
+feel broken — every direction hits a limit immediately. Measured: a neutral captured at
+r = 817 mm, z = 180 mm sat *exactly* on the floor limit with 53 mm of reach left. From
+home you get 174 mm of reach headroom and 297 mm above the floor.
+
+**It does not home by itself, deliberately.** GO TO HOME is a joint-space move that does
+not avoid obstacles, so a person has to look at the robot and decide the path is clear.
+`--allow-any-start` overrides the gate.
+
+### Every option
+
+```bash
+ros2 launch ~/fairino_380_ws/teleop.launch.py \
+    tracker:=hands          # hands | pose
+    mode:=torso             # torso | cylindrical | cartesian  (pose only)
+    source:=ros             # ros | webcam
+    use_depth:=true         # measured distance vs inferred from hand size
+    dry_run:=false          # compute everything, publish nothing
+    hold:=false             # hold-to-move instead of click-to-toggle
+    scale:=1.0              # motion amplification
+    max_speed:=5.0          # degrees per second per joint
+    filter_hz:=2.0          # post-IK smoothing, lower is smoother
+    hand_smooth_hz:=2.5     # input smoothing, lower is steadier
+    deadband:=12.0          # ignore target movement below this, mm
+    max_jump:=30.0          # degrees before a solution counts as a flip
+    device:=0               # camera index when source:=webcam
+```
+
+Script-only flags: `--max-lead`, `--auto-stop`, `--max-offset`, `--max-azimuth`,
+`--home-tolerance`, `--allow-any-start`, `--no-pinch`, `--no-depth`.
+
+### Settings that worked
+
+```bash
+# simulation, whole-arm tracking
+ros2 launch ~/fairino_380_ws/teleop.launch.py tracker:=pose deadband:=20.0
+
+# simulation, hand tracking with depth
+ros2 launch ~/fairino_380_ws/teleop.launch.py deadband:=20.0
+
+# real hardware -- hold mode, half scale, 5 deg/s
+ros2 launch ~/fairino_380_ws/teleop.launch.py hold:=true scale:=0.5
+
+# very damped, if the room or lighting is poor
+ros2 launch ~/fairino_380_ws/teleop.launch.py \
+    deadband:=25.0 hand_smooth_hz:=1.2 filter_hz:=0.8 scale:=0.7
+```
+
+---
+---
 
 # PART 6 — Robot parameters
 
@@ -1836,46 +2102,85 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 
 # PART 7 — Status
 
+*Last updated: 14 November 2026.*
+
 ## Verified on hardware
 
-- Ethernet link to controller at `192.168.58.2`
-- Feedback TCP port 8081 reachable
+- Ethernet link to controller at `192.168.58.2`; feedback TCP port 8081 reachable
 - Driver builds from tag `V3.0.0_RobotV3.8.0`
 - **Method A:** `ros2_cmd_server` runs; `JNTPoint`+`MoveJ` and `CARTPoint`+`MoveL`
   execute real motion; home position script runs
 - **Method B:** real hardware plugin loads and reaches `active`; both controllers active;
-  `/joint_states` matches the physical arm; joint-slider plan and execute performed
+  joint-slider plan and execute performed on the real arm
 - Joint rotation directions recorded for J1–J4, J6
 - URDF geometry cross-checked against the DH table
-- **Camera:** D455 forwarded into WSL via usbipd; colour stream stable at ~14.5 Hz
-  at 640×360×15
-- **Kinematics:** FK and IK implemented and verified against each other over 2000 random
-  poses, 0 failures (Part 6.1)
-- **Phase 1 tracker:** right-arm skeleton and angles, publishing `/human_arm_angles`,
-  running at ~16 fps
-- **Phase 2 mapper:** GUI written, publishing `/fr5_joint_targets`
-- **Phase 3 teleop:** safety chain written and bench-tested — a 60° step takes 6 s at
-  `--max-speed 10`, exactly as designed
-- **Method 1 drove the simulated robot** — j3 followed shoulder elevation in RViz
-- **Method 2 (Cartesian IK) drove the simulated robot** — hand position controlling the
-  tool flange through the closed-form IK, with workspace clamping and flip rejection.
-  Simulated 480 frames of continuous motion: 0 refusals, worst frame-to-frame joint
-  change 2.5°
+- **Camera:** D455 forwarded into WSL via usbipd; colour stream stable at ~14.5 Hz at
+  640×360×15; a second D455 from the lab also works; aligned depth at 480×270×15 works
+  and gives ~2 mm reach precision
+- **Kinematics:** FK and IK verified against each other over 2000 random poses,
+  0 failures (Part 6.1)
+- **Method 1** (joint mapping) drove the simulated robot — j3 followed shoulder elevation
+- **Method 2** (Cartesian IK) drove the simulated robot in all three mapping modes and
+  with both trackers
+- **Method 2 drove the real robot.** Hand position controlled the physical arm through
+  the closed-form IK with workspace clamping, flip rejection and rate limiting
+- MoveIt motion planning executed on the real arm from RViz
+- DDS misconfiguration on the lab workstation diagnosed and fixed (Part 8)
 
-## Not yet done
+## Measured
 
-- **Teleoperation stage 2** — the whole pipeline against the simulated robot in RViz
-  (Part 5.6). Nothing has driven a robot, real or simulated, yet
-- **Teleoperation stage 3** — real hardware
-- **A chosen mapping** — no human-angle-to-robot-joint assignment has been settled on
-- **Jitter measurement** — how much the angles wander at rest, which sizes `--filter-hz`
-- **J5 direction** not recorded
-- **j3 URDF limit** not yet corrected (±162° should be ±150°)
-- **ServoJ rate mismatch** not yet corrected (100 Hz vs declared 8 ms)
+| | |
+|---|---|
+| IK round-trip | 2000 / 2000 poses, 0 failures |
+| Flip rejection, 480 frames of continuous motion | 0 false refusals, worst joint change 2.5° |
+| Hold-still wander, no filtering | 3.07 mm |
+| Hold-still wander, smoothing + 12 mm deadband | **0.00 mm** |
+| Reach jitter, inferred from hand size | 18.5 mm |
+| Reach jitter, measured depth | **~2 mm** |
+| Base rotation range, cylindrical mode | ±90° (vs ±30° Cartesian) |
+| Commanded velocity before the lead clamp, 5 °/s limit | 80 °/s |
+| Commanded velocity after the lead clamp | 6.0 °/s |
+
+## Fixed, worth knowing about
+
+- **The open-loop oscillation** — the arm shook in place on real hardware and had to be
+  emergency-stopped. Cause and fix in Part 5.8. **Read that before the next hardware
+  session.**
+- `ros2_controllers.yaml` `update_rate` was 100 Hz against a declared 8 ms (125 Hz)
+  ServoJ cycle. Now 125
+- Mirror bug — the tracker followed the wrong arm because detection ran on the flipped
+  frame
+- Flip guard compared against the lagging command instead of the previous IK result,
+  freezing the arm a second into every move
+- Workspace clamping added after the arm was driven toward the floor by a joint mapping
+  that satisfied every joint limit. **Joint limits do not know where the floor is.**
+
+## Open
+
+- **`/joint_states` stalls on the real hardware setup.** The plugin reaches `active`, all
+  six interfaces show `[claimed]`, both controllers are `active`, the topic exists in
+  `ros2 topic list` — but nothing is published, and teleop reports `FROZE`. The
+  controller manager's update loop appears to be blocked inside the hardware interface's
+  `read()`. Likely robot-side rather than software-side: e-stop engaged, teach pendant in
+  manual mode, or a pendant application holding the controller. **To diagnose:** capture
+  the full Terminal 1 startup log, and cross-check with Method A
+  (`ros2_cmd_server` + `/nonrt_state_data`) — if Method A reads state fine, the problem
+  is in the ros2_control plugin, not the connection.
+- **J5 rotation direction** not recorded
+- **j3 URDF limit** not corrected (±162° should be ±150°)
 - **Camera not in the URDF** — MoveIt does not know it exists, so collision checking
-  ignores it and it does not appear in RViz
-- **Depth stream** not validated under load; IMU unavailable in WSL
+  ignores it
+- **IMU** unavailable in WSL
 - **Python demo node** for Method A — motion is still typed by hand
+
+## Not built, but designed
+
+Ideas discussed and deliberately left out:
+
+- Record and replay (lead-through programming)
+- Plane-lock mode — 2 DOF only, for a first demo
+- Colour-coded video border and audio feedback for engage state
+- Unifying the hand tracking point to the palm centre on all three axes
 
 ---
 ---
@@ -1898,6 +2203,43 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 | `Package 'X' not found` searching only `['/opt/ros/humble']` | workspace not sourced — `source ~/fairino_380_ws/install/local_setup.bash` in **this** terminal |
 | `-Wmaybe-uninitialized` warnings on build | Expected. Vendor code. Ignore |
 | VS Code lost the WSL connection | Normal between sessions. `Ctrl+Shift+P` → `WSL: Connect to WSL using Distro` |
+| `rcl node's rmw handle is invalid`, or `robot_state_publisher` restarting in a loop, or nodes that cannot see each other's topics | **Broken DDS configuration.** See the fix immediately below this table. Hit on the lab workstation |
+| `ros2 topic list` shows the topic but `ros2 topic hz` says *does not appear to be published yet* | Either the DDS fix below, or the publisher really is stalled — if it is `/joint_states`, see Part 7 |
+
+### The DDS fix
+
+ROS 2 nodes find each other through a DDS middleware. A leftover or broken CycloneDDS
+configuration file makes nodes fail to start, or start and never see each other.
+
+```bash
+unset CYCLONEDDS_URI
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_LOCALHOST_ONLY=1
+```
+
+To make it permanent:
+
+```bash
+cat >> ~/.bashrc <<'EOF'
+unset CYCLONEDDS_URI
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_LOCALHOST_ONLY=1
+EOF
+```
+
+**Every terminal must match.** Two nodes on different middlewares, or one with
+`ROS_LOCALHOST_ONLY=1` and one without, simply never see each other — and nothing
+reports an error, which is what makes this one hard to spot. Check with:
+
+```bash
+echo $RMW_IMPLEMENTATION $ROS_LOCALHOST_ONLY
+# expect:  rmw_fastrtps_cpp 1
+```
+
+`ROS_LOCALHOST_ONLY=1` keeps all traffic on the loopback interface. On a machine with
+one Ethernet port and no wireless card this also avoids DDS trying to discover peers
+across the robot's network.
+
 
 ## Method A
 
@@ -1963,6 +2305,13 @@ All of these come from the numpy 1.x vs 2.x split — see Part 4.8.
 | Teleop: `refused: no /joint_states` | the robot (real or mock) is not launched |
 | Teleop: `refused: j<n> off by <x>` | the engage gate — the mapping points somewhere far from the arm's real pose. Adjust offset, or capture neutral |
 | Teleop: `FROZE: tracking lost` | you left the camera's view, or a landmark dropped out |
+| Teleop: `FROZE` with the camera clearly working | `/joint_states` is not arriving. `ros2 topic hz /joint_states` — if it says *not published yet*, the robot side is the problem, not the vision side. See Part 7 |
+| **The arm shakes in place** | Stop it. This was a real bug — the command ran ahead of the arm. Fixed; make sure you are on the current `hand_teleop.py` (`grep -c lead_for hand_teleop.py` must not be 0) and read Part 5.8 |
+| `STOPPED: the arm is not following` | Working as designed — the arm fell more than 8° behind. Something is physically holding it, or the controller is not keeping up. Clear the obstruction before re-engaging |
+| Overlay says `no depth here` | Hand is closer than the D455's ~40 cm minimum, or on a surface that returns no depth. It falls back to the size estimate by itself |
+| `CAPTURE NEUTRAL` greyed out, home button red | The arm is more than 15° from home. Press GO TO HOME first — Part 5.8 |
+| Nothing visible in RViz where the target should be | The markers are not added. **Add → By topic → `/fr5_workspace` → MarkerArray**, then File → Save Config |
+| Base drifts while you hold still | Raise `deadband:=20.0` and lower `hand_smooth_hz:=1.5` |
 
 ---
 
@@ -1976,6 +2325,7 @@ fairino_380_ws/
 │       ├── fairino_msgs/                RemoteCmdInterface.srv
 │       ├── fairino_description/         STL meshes + fairino5_v6.urdf
 │       └── fairino5_v6_moveit2_config/  MoveIt config + demo.launch.py
+├── FOLLOW_ALONG.md                      START HERE — blind step-by-step setup
 ├── hand_teleop.py                       METHOD 2 — Cartesian teleoperation, all-in-one
 ├── teleop.launch.py                     METHOD 2 — camera + teleop in one launch
 ├── arm_tracker.py                       Method 1 phase 1 — vision, arm angles

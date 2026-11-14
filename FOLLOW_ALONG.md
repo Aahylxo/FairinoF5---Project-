@@ -152,16 +152,26 @@ Ubuntu 22.04** — without them later steps fail.
 ## Step 12 — Make ROS load automatically
 
 ```bash
-echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+cat >> ~/.bashrc <<'EOF'
+source /opt/ros/humble/setup.bash
+unset CYCLONEDDS_URI
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ROS_LOCALHOST_ONLY=1
+EOF
 source ~/.bashrc
-echo "$ROS_DISTRO"
+echo "$ROS_DISTRO $RMW_IMPLEMENTATION $ROS_LOCALHOST_ONLY"
 ```
 
-**You should see:** `humble`
+**You should see:** `humble rmw_fastrtps_cpp 1`
+
+The last three lines set the messaging system ROS uses to talk between programs. They
+are here because a broken default configuration stopped the whole thing working on one
+machine, in a way that gave no useful error. Setting it explicitly avoids that.
 
 > **If it goes wrong**
 >
-> Prints nothing → Step 10 did not finish. Run it again and watch for errors.
+> Prints nothing, or just blank spaces → Step 10 did not finish. Run it again and watch
+> for errors.
 
 ---
 ---
@@ -283,6 +293,21 @@ ros2 launch fairino5_v6_moveit2_config demo.launch.py
 >
 > `Package not found` and it only searched `['/opt/ros/humble']` → you missed
 > `source install/local_setup.bash`. Both source lines are needed in **every** terminal.
+>
+> `rcl node's rmw handle is invalid`, or `robot_state_publisher` restarting over and over
+> → the messaging system is misconfigured. Run these three lines in **every** terminal,
+> then start again:
+>
+> ```bash
+> unset CYCLONEDDS_URI
+> export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+> export ROS_LOCALHOST_ONLY=1
+> ```
+>
+> Step 12 puts them in `~/.bashrc` so this does not happen. If you skipped it, do it now.
+>
+> RViz opens but there is **no robot in it** → the robot model did not load. `Ctrl+C` and
+> run the command again, checking the first few lines of output for errors.
 
 ## Step 20 — Check the controllers
 
@@ -416,13 +441,23 @@ Terminal 2:
 
 ```bash
 source /opt/ros/humble/setup.bash
-ros2 launch ~/fairino_380_ws/teleop.launch.py
+ros2 launch ~/fairino_380_ws/teleop.launch.py deadband:=20.0
 ```
 
 **You should see two new windows:**
 
-- a video window showing you, with a green skeleton on your right arm
+- a video window showing you, with coloured dots and lines drawn on your hand
 - a control panel titled *FR5 hand teleoperation*
+
+By default this tracks your **hand**, close to the camera. To track your **whole arm**
+from across the room instead, add `tracker:=pose`:
+
+```bash
+ros2 launch ~/fairino_380_ws/teleop.launch.py tracker:=pose deadband:=20.0
+```
+
+Both work. Hand tracking is more precise; arm tracking looks better on video. The steps
+below cover both — where they differ, it says so.
 
 > **If it goes wrong**
 >
@@ -434,16 +469,26 @@ ros2 launch ~/fairino_380_ws/teleop.launch.py
 >
 > `mediapipe is not installed` → go back to Step 14.
 
-## Step 29 — Stand where the camera can see you
+## Step 29 — Get yourself in front of the camera
 
-Stand about **2 metres back**, facing the camera, so your **whole upper body is in
-frame**.
+**Hand tracking (the default):** sit or stand so your hand is about **40–60 cm** from the
+lens, palm towards the camera, fingers spread.
+
+**Arm tracking (`tracker:=pose`):** stand about **2 metres back**, facing the camera, so
+your **whole upper body is in frame**.
 
 **You should see:** `TRACKED` in green on the video window, and `ready` in green on the
 control panel.
 
-> `cannot see your arm` → step further back. It needs both shoulders **and both hips**
-> visible.
+> `cannot see your hand` → move your hand into frame, spread your fingers, and improve
+> the lighting. Dim rooms and hands against a busy background are the usual causes.
+>
+> `cannot see your arm` (arm tracking) → step further back. It needs both shoulders
+> **and both hips** visible.
+>
+> `no depth here` in the overlay → your hand is closer than about 40 cm, which is nearer
+> than the camera can measure. Move it back a little. It still works without depth, just
+> less precisely.
 
 ## Step 30 — Press the three buttons, in order
 
@@ -456,27 +501,53 @@ It moves slowly — that is deliberate.
 
 Nothing moves. This records where your hand is and where the robot's tool is.
 
-Stand comfortably with your arm out to the side at about chest height when you press it.
+Hold your hand in a comfortable middle position — not stretched out — when you press it.
+
+> **If this button is greyed out and the home button is red**, the arm is not at home.
+> Press `GO TO HOME POSE` first and wait. This is deliberate: capturing a neutral pose
+> while the arm is stretched out leaves it no room to move, and everything then hits a
+> limit immediately.
 
 **3. Press `2. CLICK TO START MOVING`.**
 
 The button turns red.
 
+### Also, once: show the workspace in RViz
+
+In the RViz window from Step 19:
+
+**`Add` button (bottom left) → `By topic` tab → `/fr5_workspace` → `MarkerArray` → OK**
+
+Then **File → Save Config** so you do not have to do it again.
+
+**You should see:** a large translucent blue cylinder (the reach limit), a red disc (the
+floor), and a **green sphere** — which is where your hand is sending the robot's tool.
+
 ## Step 31 — Move the robot with your hand
 
-- **Swing your arm left and right** → the robot's base turns the same way
-- **Reach out and pull back** → the arm extends and retracts
-- **Raise and lower your hand** → the tool goes up and down
+**Hand tracking:** **pinch your thumb and index finger together** to grab, then move your
+hand. Open your fingers to let go. The overlay shows `PINCH` when it has you.
 
-The robot lags behind you. That is the speed limit working.
+**Arm tracking:** no pinch — the control panel button is the switch.
 
-Press the button again, or press `Esc`, to stop.
+Either way:
+
+- **Move left and right** → the robot's base turns the same way
+- **Move towards and away from the camera** → the arm extends and retracts
+- **Move up and down** → the tool goes up and down
+
+The robot lags behind the green sphere. **That gap is the speed limit working** — it is
+not a fault. The sphere leads, the arm follows.
+
+Press the button again, or press `Esc` or `Space`, to stop.
 
 > **If a direction feels backwards**, tick the matching **invert** box in the panel, then
 > press `CAPTURE NEUTRAL POSE` again.
 >
 > **If it says `LIMIT:` constantly**, press `GO TO HOME POSE` and capture neutral again.
-> Capturing while stretched out leaves no room to move.
+>
+> **If the robot drifts while you hold still**, add `deadband:=25.0 hand_smooth_hz:=1.5`
+> to the Step 28 command.
 
 **That is the whole system working.** Everything from here is the real robot.
 
@@ -498,6 +569,12 @@ Press the button again, or press `Esc`, to stop.
 >
 > **The physical e-stop is the only true stop.** Every software stop travels over the
 > same network link that might be the problem.
+>
+> **If the arm starts shaking or vibrating in place, hit the e-stop immediately.** This
+> happened once, from a software bug which has since been fixed — the command was running
+> ahead of where the arm actually was. The fix is in the current code; if you are on an
+> older copy, `grep -c lead_for ~/fairino_380_ws/hand_teleop.py` prints `0` and you must
+> update before running on hardware. The explanation is in README Part 5.8.
 >
 > Everything in this section moves at **5 degrees per second per joint**, which is about
 > 5 cm per second at the tool, roughly a thirty-sixth of the robot's maximum. Do not
@@ -795,6 +872,16 @@ ros2 launch ~/fairino_380_ws/teleop.launch.py
 | `LIMIT:` constantly | `GO TO HOME POSE`, then capture neutral again |
 | A direction is backwards | Tick **invert**, then capture neutral again |
 | `Segmentation fault` on Ctrl+C | Known MoveIt bug on exit. Harmless |
+| `rmw handle is invalid`, or `robot_state_publisher` restarting in a loop | Step 12's three `export` lines, in every terminal |
+| Programs run but cannot see each other's data | Same — every terminal must have the same Step 12 settings. Check with `echo $RMW_IMPLEMENTATION $ROS_LOCALHOST_ONLY` |
+| `cannot see your hand` | Hand 40–60 cm from the lens, fingers spread, better lighting |
+| `no depth here` | Hand is closer than ~40 cm. Move it back |
+| `CAPTURE NEUTRAL` greyed out, home button red | Press `GO TO HOME POSE` first |
+| No green sphere in RViz | End of Step 30 — the markers need adding once |
+| Drifts while you hold still | Add `deadband:=25.0 hand_smooth_hz:=1.5` |
+| `STOPPED: the arm is not following` | Working as intended — the arm fell behind. Clear whatever is holding it before re-engaging |
+| **The arm shakes in place** | **Hit the e-stop.** Then check you are on the current code: `grep -c lead_for ~/fairino_380_ws/hand_teleop.py` must not print `0`. See README Part 5.8 |
+| `FROZE` with the camera clearly working | `ros2 topic hz /joint_states` — if it says *not published yet*, the robot side has stalled, not the camera. README Part 7 |
 | Compiler warnings when building | Expected from the vendor driver. Not errors |
 
 ---
