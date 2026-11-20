@@ -23,12 +23,48 @@ Intel RealSense D455.
 
 ---
 
+## Project brief — where each requirement is documented
+
+The course brief (12.11.2026) asks for three stages of work and six documentation items.
+This maps each to where it lives.
+
+### Stages
+
+| | Required | Where | Status |
+|---|---|---|---|
+| 1 | Configure the robot in Ubuntu Linux | Parts 1.0–1.4, 2, 3 | **Done** — real arm driven via Method A and Method B |
+| 2 | RViz set up, sensor data visualised | Parts 3.4, 4.9 | **Done** — robot state, colour stream and depth point cloud |
+| 3 | MoveIt configured, motion and trajectory planning demonstrated | Part 3 | **Done** — planned and executed on the real arm |
+
+### Documentation items
+
+| Required | Where |
+|---|---|
+| Ubuntu and ROS 2 setup | `FOLLOW_ALONG.md` Sections A–B · Part 1.1 |
+| Required dependencies and package installations | Part 1.0 (versions) · Part 1.1 · `requirements.txt` · Part 4.8 |
+| Workspace and package creation | **Part 1.4** |
+| Robot URDF and configuration files | **Part 3.0** · Part 6.1 (DH cross-check) |
+| Sensor integration and RViz visualization | Part 4 · **Part 4.9** |
+| MoveIt configuration and trajectory planning | Part 3 |
+| Commands, troubleshooting steps, screenshots | Throughout · Part 8 (troubleshooting) · **Part 9 (screenshots)** |
+
+**Reproducible from scratch:** `FOLLOW_ALONG.md` is a 49-step blind walkthrough from a
+bare Windows laptop to a moving arm. Every step states what you should see and what to do
+when you do not. It is the file to hand someone who has never touched this project.
+
+**Exact versions:** `bash versions.sh | tee VERSIONS.txt` records every one of them from
+the machine it runs on. Part 1.0 lists the pins and why each is pinned.
+
+---
+
 ## Contents
 
 **[PART 0 — MAIN INSTRUCTIONS](#part-0--main-instructions)** ← always start here
 
 **[PART 1 — Common setup](#part-1--common-setup)**
+- [1.0 Versions — record these first](#10-versions--record-these-first)
 - [1.1 One-time install](#11-one-time-install-already-done)
+- [1.4 Workspace and package structure](#14-workspace-and-package-structure)
 - [1.2 Every-session startup](#12-every-session-startup)
 - [1.3 Verify communication](#13-verify-communication)
 
@@ -40,6 +76,7 @@ Intel RealSense D455.
 - [2.5 Stopping](#25-stopping-method-a)
 
 **[PART 3 — METHOD B: RViz + MoveIt control](#part-3--method-b-rviz--moveit-control)**
+- [3.0 The configuration files](#30-the-configuration-files)
 - [3.1 Install MoveIt and build](#31-install-moveit-and-build)
 - [3.2 Test in simulation first](#32-test-in-simulation-first)
 - [3.3 Switch to real hardware](#33-switch-to-real-hardware)
@@ -56,6 +93,7 @@ Intel RealSense D455.
 - [4.6 Verify the stream](#46-verify-the-stream)
 - [4.7 D455 limits](#47-d455-limits--read-before-planning-any-vision-work)
 - [4.8 The Python dependency trap](#48-the-python-dependency-trap)
+- [4.9 Showing sensor data in RViz](#49-showing-sensor-data-in-rviz)
 
 **[PART 5 — Hand tracking and teleoperation](#part-5--hand-tracking-and-teleoperation)**
 - [5.0 Two methods](#50-two-methods)
@@ -78,6 +116,8 @@ Intel RealSense D455.
 **[PART 7 — Status](#part-7--status)**
 
 **[PART 8 — Troubleshooting](#part-8--troubleshooting)**
+
+**[PART 9 — Screenshots](#part-9--screenshots)**
 ---
 ---
 
@@ -316,6 +356,71 @@ intended. Always verify with feedback afterwards. Never re-send a command becaus
 
 Needed by both methods.
 
+## 1.0 Versions — record these first
+
+Versions are the first thing to check when something works on one laptop and not another.
+Run this on the machine the demonstration will happen on:
+
+```bash
+cd ~/fairino_380_ws
+bash versions.sh | tee VERSIONS.txt
+```
+
+It prints everything below, plus the camera, the controller link, and the line count and
+checksum of every script. Commit `VERSIONS.txt`.
+
+### The versions this project is pinned to
+
+| | Version | Why this one |
+|---|---|---|
+| Windows | 11 | WSL2 needs build 19041+ |
+| WSL | 2 | WSL1 cannot forward USB |
+| Ubuntu | **22.04 LTS** (Jammy) | **ROS 2 Humble does not exist for 24.04.** This is not a preference |
+| ROS 2 | **Humble Hawksbill** | The last distro the vendor driver targets |
+| Python | 3.10.x | Ships with 22.04. Do not replace it |
+| pip | 22.0.2 | Ships with 22.04. Predates `--break-system-packages` — see 4.8 |
+| gcc | 11.4.0 | Ships with 22.04 |
+| CMake | 3.22.1 | Ships with 22.04 |
+
+### Pinned Python packages
+
+Exact pins, from `requirements.txt`. **These are load-bearing** — Part 4.8 explains each.
+
+| Package | Pin | Why |
+|---|---|---|
+| numpy | **1.26.4** | Humble's apt packages are all built against numpy 1.x. numpy 2 breaks them |
+| mediapipe | **0.10.14** | Last release with the `mp.solutions` API. 1.x deleted it |
+| opencv-contrib-python | **4.10.0.84** | opencv 5 is numpy-2 only |
+
+### Pinned vendor driver
+
+| | Value |
+|---|---|
+| Repository | `https://github.com/FAIR-INNOVATION/frcobot_ros2.git` |
+| Tag | **`V3.0.0_RobotV3.8.0`** |
+| Commit | `7c683cf` |
+| Matching controller firmware | **v3.8.0.1** |
+
+**Do not `git pull` to main.** The tag and the firmware are a matched pair.
+
+### Robot and camera
+
+| | Value |
+|---|---|
+| Robot | FAIRINO FR5, 6-axis collaborative arm |
+| Payload / reach | 5 kg / 922 mm |
+| Controller IP | `192.168.58.2` |
+| Laptop IP | `192.168.58.1`, mask `255.255.255.0` |
+| Camera | Intel RealSense D455 |
+| Colour stream | 640×360 @ 15 fps |
+| Depth stream | 480×270 @ 15 fps, aligned to colour |
+
+Controller and servo firmware are read from the **teach pendant**, under
+*System → About / Version*. There is no command that reads them over the network —
+record them by hand and put them in `VERSIONS.txt`.
+
+---
+
 ## 1.1 One-time install (already done)
 
 Recorded so the project is reproducible from a clean Ubuntu 22.04 install.
@@ -395,6 +500,83 @@ Expected: `2 packages finished` (`fairino_msgs`, `fairino_hardware`).
 
 `-Wmaybe-uninitialized` warnings and `1 package had stderr output: fairino_hardware`
 are **expected** in this tagged release. Not errors. Do not try to fix them.
+
+## 1.4 Workspace and package structure
+
+A **colcon workspace** is a folder with a `src/` directory in it. Everything else —
+`build/`, `install/`, `log/` — colcon generates. That is the whole concept.
+
+```
+~/fairino_380_ws/          <- the workspace
+├── src/                   <- the only folder you ever put source in
+│   └── frcobot_ros2/      <- the vendor's repository, cloned here
+├── build/                 <- generated by colcon. Never committed
+├── install/               <- generated by colcon. Never committed
+└── log/                   <- generated by colcon. Never committed
+```
+
+**No package was created from scratch for this project.** The vendor ships the ROS 2
+packages; this project clones them at a pinned tag and adds standalone Python scripts
+at the workspace root. That was deliberate — a hand-rolled package wrapping the vendor's
+driver would be another thing to keep in sync for no benefit.
+
+For reference, had one been needed:
+
+```bash
+cd ~/fairino_380_ws/src
+ros2 pkg create --build-type ament_python my_package \
+    --dependencies rclpy sensor_msgs trajectory_msgs
+```
+
+### The four packages that come from the clone
+
+```bash
+ls ~/fairino_380_ws/src/frcobot_ros2
+```
+
+| Package | Build type | What it is |
+|---|---|---|
+| `fairino_msgs` | ament_cmake | Service definitions, chiefly `RemoteCmdInterface.srv` |
+| `fairino_hardware` | ament_cmake | The driver: `ros2_cmd_server`, the `ros2_control` plugin, and the vendor's compiled `.so` |
+| `fairino_description` | ament_cmake | The robot model — STL meshes and `fairino5_v6.urdf` |
+| `fairino5_v6_moveit2_config` | ament_cmake | MoveIt configuration and `demo.launch.py` |
+
+The repository also ships FR3/FR10/FR16/FR20/FR30 variants of the last two. **Use the
+`fairino5` ones.** Launching an FR10 config against an FR5 gives a robot that looks
+nearly right and reaches the wrong places.
+
+### Building
+
+```bash
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to fairino_hardware --symlink-install
+source install/local_setup.bash
+```
+
+`--packages-up-to fairino_hardware` builds only that package and what it depends on —
+2 packages, not the whole repository. Build everything with a bare `colcon build` if you
+want the MoveIt config too.
+
+`--symlink-install` is why editing a config file takes effect without rebuilding: the
+install tree points at the source files instead of copying them. **This is load-bearing
+for Part 3.3**, where one line in a xacro switches between the simulated and the real
+robot.
+
+### Sourcing — the rule that catches everyone
+
+Every new terminal needs **both** lines:
+
+```bash
+source /opt/ros/humble/setup.bash          # ROS itself
+source ~/fairino_380_ws/install/local_setup.bash   # this workspace
+```
+
+Miss the second and you get `Package 'fairino5_v6_moveit2_config' not found`, with the
+error showing it searched only `['/opt/ros/humble']`. That message is the diagnosis —
+the search path tells you which line is missing.
+
+---
 
 ## 1.2 Every-session startup
 
@@ -685,6 +867,81 @@ obstacle executes smoothly into it.
 
 Also: **RViz shows no obstacles unless you add them.** The planning scene is empty by
 default, so MoveIt considers the entire workspace free — table, mount, cables, you.
+
+## 3.0 The configuration files
+
+MoveIt is configured entirely by files. Nothing is hard-coded. Before changing anything,
+list what is actually there:
+
+```bash
+ls ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/
+ls ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/launch/
+ls ~/fairino_380_ws/src/frcobot_ros2/fairino_description/
+```
+
+**Do this rather than trusting the table below.** Vendor layouts shift between releases;
+the filenames here are what tag `V3.0.0_RobotV3.8.0` ships, and the `ls` is how you
+confirm it.
+
+### What each file does
+
+| File | What it defines |
+|---|---|
+| `fairino5_v6.urdf` | **The robot itself** — links, joints, axes, limits, meshes. The single source of truth for geometry |
+| `*.srdf` | **Semantics** — which joints form the arm group, named poses like `home`, and which link pairs can never collide |
+| `kinematics.yaml` | Which IK solver MoveIt uses, its timeout and resolution |
+| `joint_limits.yaml` | Velocity and acceleration ceilings **for planning**. Separate from the URDF's position limits |
+| `ompl_planning.yaml` | Planner settings (RRTConnect and friends) |
+| `ros2_controllers.yaml` | Controller definitions — `fairino5_controller`, `joint_state_broadcaster`, and the `update_rate` |
+| `moveit_controllers.yaml` | How MoveIt hands trajectories to those controllers, via `FollowJointTrajectory` |
+| `fairino5_v6_robot.ros2_control.xacro` | **The hardware plugin line** — simulated or real. Part 3.3 |
+
+### URDF vs SRDF
+
+The one that confuses people. The **URDF** says what the robot *is* — this link is
+425 mm long, this joint rotates about Z between these angles. The **SRDF** says what to
+*do* with it — these six joints are a planning group called `fairino5_v6_group`, this
+set of angles is called `home`, these two links are always touching so stop checking them
+for collisions.
+
+MoveIt needs both. The URDF alone describes a robot nothing knows how to plan for.
+
+### Checking the URDF agrees with the DH table
+
+The URDF and the DH parameters in Part 6.1 describe the same robot two different ways.
+They must agree, and this project checked that they do:
+
+```bash
+cd ~/fairino_380_ws
+source install/local_setup.bash
+
+# render the xacro to plain URDF and look at the joint origins
+xacro src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.urdf.xacro \
+  > /tmp/fr5.urdf
+grep -A2 "<origin" /tmp/fr5.urdf | head -40
+
+# check it parses at all
+check_urdf /tmp/fr5.urdf
+```
+
+The link offsets should match the `d` and `a` columns of the DH table: 152, 425, 395,
+102, 102, 100 mm. **This is the cross-check that proves the kinematics in
+`fr5_kinematics.py` describe the robot RViz is drawing**, and it is worth showing the
+examiner.
+
+### Known defects in the vendor configuration
+
+Two, both found by inspection and both recorded here rather than silently patched:
+
+| Where | Defect | Status |
+|---|---|---|
+| `ros2_controllers.yaml` | `update_rate: 100` Hz against a driver that declares an 8 ms (125 Hz) ServoJ cycle | **Fixed** — set to 125 |
+| `fairino5_v6.urdf` | j3 limit is ±162°, but the FR5 specification says ±150° | **Not fixed.** The URDF is more permissive than the robot. Planning can produce a trajectory the arm will refuse |
+
+The second is live. Nothing in this project drives j3 past 150°, but anyone planning
+freely in RViz could.
+
+---
 
 ## 3.1 Install MoveIt and build
 
@@ -1211,6 +1468,101 @@ downloading a separate `.task` model file.
 ```bash
 pip3 install --default-timeout=120 --retries 10 -r requirements.txt
 ```
+
+---
+---
+## 4.9 Showing sensor data in RViz
+
+Part 4.6 verifies the camera works. This section puts its data **inside RViz, next to the
+robot** — which is the thing to demonstrate, because it is what "sensor data
+visualization" means.
+
+Three displays, in increasing order of how good they look.
+
+### 1. The colour image
+
+With the camera running (Part 4.4) and RViz open:
+
+**`Add` → `By topic` → `/camera/camera/color/image_raw` → `Image` → OK**
+
+A video panel appears in the corner of RViz. Lowest effort, and enough to prove the
+stream is live.
+
+### 2. The depth cloud — the one worth showing
+
+Depth comes out as a 3D point cloud, drawn in the same space as the robot.
+
+The camera node must publish it, which it does not do by default. Start it with the
+point cloud enabled:
+
+```bash
+ros2 launch realsense2_camera rs_launch.py \
+    rgb_camera.color_profile:=640x360x15 \
+    depth_module.depth_profile:=480x270x15 \
+    align_depth.enable:=true \
+    pointcloud.enable:=true \
+    enable_infra1:=false enable_infra2:=false
+```
+
+Then in RViz:
+
+**`Add` → `By topic` → `/camera/camera/depth/color/points` → `PointCloud2` → OK**
+
+Set the display's **Color Transformer** to `RGB8`. You now have a coloured 3D cloud of
+whatever the camera sees.
+
+> **If the cloud does not appear**, it is almost always the **Fixed Frame**. RViz draws
+> everything relative to one frame; the robot's is `base_link` and the camera's is
+> `camera_link`, and ROS has not been told how they relate (see the warning below). Set
+> `Global Options → Fixed Frame` to `camera_link` and the cloud appears — the robot will
+> then be the thing that vanishes.
+>
+> That is the honest state of this project, and worth saying out loud rather than
+> hiding.
+
+### ⚠ The camera is not in the URDF
+
+**The robot model does not know the camera exists.** There is no link for it, so there is
+no transform between `base_link` and `camera_link`. Three consequences:
+
+- RViz cannot draw the robot and the point cloud in one coherent scene
+- MoveIt's collision checking does not know the camera is there — **it will happily plan
+  the arm through it**
+- The cloud cannot be used as a collision object, which is the usual reason to want one
+
+For a demonstration, a static transform is enough to put both in the same scene. Measure
+where the camera actually sits relative to the robot base and publish it:
+
+```bash
+# x y z yaw pitch roll parent child      -- metres and radians
+ros2 run tf2_ros static_transform_publisher \
+    1.0 0.0 0.8  3.14159 0.0 0.0  base_link camera_link
+```
+
+Those numbers are an example: **camera 1 m in front of the base, 0.8 m up, facing back
+towards the robot.** Measure your own mounting and substitute. Then set Fixed Frame back
+to `base_link` and both appear together.
+
+This is a demonstration aid, not a calibration. A proper job adds a camera link to the
+URDF with a measured origin, which is listed as open work in Part 7.
+
+### 3. The robot's own state
+
+Already on by default, and worth naming because it is also sensor data: `/joint_states`
+carries the arm's real encoder positions, and `RobotModel` in RViz is drawing from them.
+When the arm is on real hardware, **the robot you see in RViz is a live readout of the
+physical one**, not an animation.
+
+```bash
+ros2 topic echo /joint_states --once
+```
+
+### Save the RViz layout
+
+Having added displays, **File → Save Config**, or they are gone next launch. Along with
+the `/fr5_workspace` markers from Part 5.8, that is the demonstration layout.
+
+---
 
 ---
 ---
@@ -2173,6 +2525,15 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 - **IMU** unavailable in WSL
 - **Python demo node** for Method A — motion is still typed by hand
 
+## Documentation
+
+- `FOLLOW_ALONG.md` — 49 steps, bare Windows laptop to a moving arm, every step with an
+  expected result and a failure box
+- `README.md` — this file: why each step exists, the parameters, the full troubleshooting
+  reference
+- `versions.sh` → `VERSIONS.txt` — every version, recorded from the machine itself
+- `docs/screenshots/` — Part 9 lists what to capture and under what filename
+
 ## Not built, but designed
 
 Ideas discussed and deliberately left out:
@@ -2314,6 +2675,70 @@ All of these come from the numpy 1.x vs 2.x split — see Part 4.8.
 | Base drifts while you hold still | Raise `deadband:=20.0` and lower `hand_smooth_hz:=1.5` |
 
 ---
+---
+---
+
+# PART 9 — Screenshots
+
+The brief asks for **screenshots at each stage**. This is the list, with the filename to
+save each under. Put them in `docs/screenshots/` in the repository:
+
+```bash
+mkdir -p ~/fairino_380_ws/docs/screenshots
+```
+
+**Taking one in WSL:** `Win` + `Shift` + `S` captures any region of the screen, including
+Linux windows — they are ordinary Windows windows. Paste into Paint and save as `.png`,
+or the screenshot lands in `~/Pictures/Screenshots` on the Windows side and can be copied
+across:
+
+```bash
+cp /mnt/c/Users/<you>/Pictures/Screenshots/<file>.png \
+   ~/fairino_380_ws/docs/screenshots/01-wsl-version.png
+```
+
+### The list
+
+| # | Filename | What it shows | Stage |
+|---|---|---|---|
+| 01 | `01-wsl-version.png` | `wsl --version` and `lsb_release -a` | Setup |
+| 02 | `02-ros-distro.png` | `echo $ROS_DISTRO` printing `humble` | Setup |
+| 03 | `03-colcon-build.png` | The build finishing, `N packages finished` visible | Build |
+| 04 | `04-pkg-list.png` | `ros2 pkg list \| grep fairino` — all four packages | Build |
+| 05 | `05-versions.png` | `versions.sh` output, or `VERSIONS.txt` open in an editor | Versions |
+| 06 | `06-rviz-sim.png` | RViz with the simulated arm, first launch | Simulation |
+| 07 | `07-controllers.png` | `ros2 control list_controllers` — both `active` | Simulation |
+| 08 | `08-moveit-plan.png` | **MoveIt mid-plan** — the orange goal state offset from the arm | MoveIt |
+| 09 | `09-moveit-trajectory.png` | The planned trajectory drawn, before Execute | MoveIt |
+| 10 | `10-rqt-graph.png` | `rqt_graph` — the node and topic graph | MoveIt |
+| 11 | `11-camera-stream.png` | The RealSense colour stream live | Sensor |
+| 12 | `12-rviz-pointcloud.png` | **Depth point cloud inside RViz** (Part 4.9) | Sensor |
+| 13 | `13-fk-ik-selftest.png` | `fr5_kinematics.py selftest` — 2000/2000, 0 failures | Kinematics |
+| 14 | `14-urdf-check.png` | `check_urdf` output, link offsets matching the DH table | Kinematics |
+| 15 | `15-teleop-panel.png` | The teleoperation panel and the video window side by side | Teleop |
+| 16 | `16-rviz-workspace.png` | RViz with the `/fr5_workspace` markers and the green target sphere | Teleop |
+| 17 | `17-hardware-plugin.png` | The `grep plugin` from Part 3.3 showing `FairinoHardwareInterface` | Real robot |
+| 18 | `18-real-joint-states.png` | `ros2 topic echo /joint_states` matching the physical arm | Real robot |
+| 19 | `19-robot-moving.png` | A photo of the actual arm mid-move | Real robot |
+| 20 | `20-git-log.png` | `git log --oneline` — the project's history | Documentation |
+
+**8, 12, 16 and 19 are the four that matter** — they are the only ones that show
+something working rather than something installed. If time is short, take those.
+
+### Referencing them
+
+Markdown embeds them directly, which is what makes a GitHub repository read well:
+
+```markdown
+![MoveIt planning a trajectory](docs/screenshots/08-moveit-plan.png)
+```
+
+### A note on 19
+
+Have someone else hold the camera. **Your hand stays on the e-stop.**
+
+---
+---
 
 ## Repository layout
 
@@ -2335,6 +2760,9 @@ fairino_380_ws/
 ├── fairino_home.py                      move to home position (Method A)
 ├── joint_mapping.json                   saved mapping (created by joint_mapper.py)
 ├── requirements.txt                     pinned Python deps; apt deps in comments
+├── versions.sh                          records every version -> VERSIONS.txt
+├── VERSIONS.txt                         generated by versions.sh -- commit it
+├── docs/screenshots/                    screenshots, numbered -- Part 9
 ├── .gitignore                           excludes build/ install/ log/
 └── README.md
 ```

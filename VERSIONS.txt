@@ -1,0 +1,76 @@
+
+FAIRINO FR5 — recorded versions
+generated: 2026-11-20 02:55 UTC
+hostname : De-Vice
+------------------------------------------------------------
+OPERATING SYSTEM
+  Windows build                      
+Microsoft Windows [Version 10.0.26300.9974]
+  WSL                                WSL version: 3.0.5.0
+  Ubuntu                             Ubuntu 22.04.5 LTS
+  kernel                             6.18.58.1-microsoft-standard-WSL2
+  architecture                       x86_64
+------------------------------------------------------------
+ROS 2
+  ROS_DISTRO                         humble
+  ros2cli                            NOT FOUND
+  RMW                                <unset, using default>
+  ROS_LOCALHOST_ONLY                 0
+  ros-humble-desktop                 0.10.0-1jammy.20260916.003705
+  ros-humble-moveit                  2.5.10-1jammy.20261006.203658
+  ros-humble-ros2-control            2.54.3-1jammy.20261005.220306
+  ros-humble-ros2-controllers        2.54.1-1jammy.20261005.222410
+  ros-humble-realsense2-camera       4.58.4-1jammy.20260915.211150
+  ros-humble-cv-bridge               3.2.1-1jammy.20260907.220118
+  ros-humble-rviz2                   11.2.29-1jammy.20260916.003100
+  ros-humble-xacro                   2.1.1-1jammy.20260304.195513
+  ros-humble-robot-state-publisher   3.0.3-2jammy.20260915.225247
+  ros-humble-joint-state-publisher-gui NOT FOUND
+------------------------------------------------------------
+BUILD TOOLS
+  gcc                                11.4.0
+  cmake                              3.22.1
+  colcon                             colcon-argcomplete 0.3.3: up-to-date
+  git                                2.34.1
+------------------------------------------------------------
+PYTHON
+  python3                            3.10.12
+  pip3                               22.0.2
+  python: numpy                      1.26.4
+  python: mediapipe                  0.10.14
+  python: cv2                        4.10.0
+  python: scipy                      1.15.3
+  python3-tk                         8.6
+------------------------------------------------------------
+FAIRINO DRIVER
+  vendor driver                      NOT FOUND at /root/fairino_380_ws/src/frcobot_ros2
+  hardware plugin in use             fairino_hardware/FairinoHardwareInterface
+  controller update_rate             125 Hz
+------------------------------------------------------------
+THIS REPOSITORY
+  git commit                         cdacd44
+  git branch                         main
+  last commit                        2026-11-14  document trackers, mapping modes, depth, workspace markers, the DDS fix and the open-loop oscillation fix
+  uncommitted                        4 file(s)
+------------------------------------------------------------
+CAMERA
+  librealsense2                      NOT FOUND
+  USB device                         NOT FOUND
+  firmware                           NOT FOUND
+------------------------------------------------------------
+ROBOT CONTROLLER (needs the Ethernet link up)
+  192.168.58.2                       not reachable (robot off, or no cable -- fine if you are in simulation)
+------------------------------------------------------------
+PROJECT FILES
+  hand_teleop.py                     1730 lines   md5 e7b9322a
+  teleop.launch.py                   126 lines   md5 461e48f4
+  fr5_kinematics.py                  524 lines   md5 da85052d
+  arm_tracker.py                     450 lines   md5 9141d36d
+  joint_mapper.py                    457 lines   md5 8861a941
+  teleop_node.py                     435 lines   md5 e4b238a4
+  fairino_home.py                    199 lines   md5 f72ae364
+  requirements.txt                   60 lines   md5 25210b3b
+  README.md                          2789 lines   md5 334c2869
+  FOLLOW_ALONG.md                    905 lines   md5 e1fec5c5
+------------------------------------------------------------
+

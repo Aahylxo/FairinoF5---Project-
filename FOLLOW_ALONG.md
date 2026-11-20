@@ -254,6 +254,21 @@ ros2 pkg prefix fairino5_v6_moveit2_config
 
 **You should see:** a path ending in `/install/fairino5_v6_moveit2_config`.
 
+### Also: record your versions
+
+```bash
+cd ~/fairino_380_ws
+bash versions.sh | tee VERSIONS.txt
+```
+
+This prints everything installed — Ubuntu, ROS, every package, Python, the driver's git
+tag, the camera. It takes a few seconds and it is the first thing to look at when
+something works on one laptop and not another. Keep `VERSIONS.txt`.
+
+**You should see:** `Ubuntu 22.04`, `ROS_DISTRO humble`, `numpy 1.26.4`,
+`mediapipe 0.10.14`, and git tag `V3.0.0_RobotV3.8.0`. Anything saying `NOT FOUND` in
+the ROS or Python sections means a step was missed.
+
 ## Step 18 — Confirm you are set to the SIMULATED robot
 
 ```bash
