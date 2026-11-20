@@ -24,7 +24,7 @@ echo "hostname : $(hostname)"
 line
 
 echo "OPERATING SYSTEM"
-item "Windows build"   "$(cmd.exe /c ver 2>/dev/null | tr -d '\r' | tr -s ' ' | sed 's/^ //')"
+item "Windows build"   "$(cmd.exe /c ver 2>/dev/null | tr -d '\000\r\n' | tr -s ' ' | sed 's/^ *//')"
 item "WSL"             "$(try wsl.exe --version | tr -d '\r\0')"
 item "Ubuntu"          "$(try lsb_release -ds)"
 item "kernel"          "$(uname -r)"
@@ -33,9 +33,10 @@ line
 
 echo "ROS 2"
 item "ROS_DISTRO"      "${ROS_DISTRO:-}"
-item "ros2cli"         "$(try ros2 --version)"
-item "RMW"             "${RMW_IMPLEMENTATION:-<unset, using default>}"
-item "ROS_LOCALHOST_ONLY" "${ROS_LOCALHOST_ONLY:-<unset>}"
+item "ros-humble-ros2cli" "$(dpkg-query -W -f='${Version}' ros-humble-ros2cli 2>/dev/null)"
+item "RMW"             "${RMW_IMPLEMENTATION:-<unset>}$([ "${RMW_IMPLEMENTATION:-}" = rmw_fastrtps_cpp ] || echo '   <-- expected rmw_fastrtps_cpp, see README Part 8')"
+item "ROS_LOCALHOST_ONLY" "${ROS_LOCALHOST_ONLY:-<unset>}$([ "${ROS_LOCALHOST_ONLY:-}" = 1 ] || echo '   <-- expected 1, see README Part 8')"
+item "CYCLONEDDS_URI"  "${CYCLONEDDS_URI:-<unset -- correct>}"
 for p in ros-humble-desktop ros-humble-moveit ros-humble-ros2-control \
          ros-humble-ros2-controllers ros-humble-realsense2-camera \
          ros-humble-cv-bridge ros-humble-rviz2 ros-humble-xacro \
@@ -47,7 +48,7 @@ line
 echo "BUILD TOOLS"
 item "gcc"             "$(try gcc -dumpfullversion)"
 item "cmake"           "$(try cmake --version | awk '{print $3}')"
-item "colcon"          "$(try colcon version-check 2>/dev/null | head -n1)"
+item "colcon"          "$(python3 -c 'import colcon_core;print(colcon_core.__version__)' 2>/dev/null)"
 item "git"             "$(try git --version | awk '{print $3}')"
 line
 
@@ -75,12 +76,24 @@ if [ -d "$SRC/.git" ]; then
     item "git commit"  "$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null)"
     item "git remote"  "$(git -C "$SRC" config --get remote.origin.url 2>/dev/null)"
     item "uncommitted vendor changes" "$(git -C "$SRC" status --porcelain 2>/dev/null | wc -l) file(s)"
+elif [ -d "$SRC" ]; then
+    item "git tag"     "NO .git FOLDER -- version cannot be proven"
+    echo "  !! The driver source is present but its git history is not, so this"
+    echo "  !! script cannot record which version you built. The project is"
+    echo "  !! pinned to tag V3.0.0_RobotV3.8.0 (commit 7c683cf). See the note"
+    echo "  !! under FAIRINO DRIVER in README Part 1.0 for how to restore it."
 else
     item "vendor driver" "NOT FOUND at $SRC"
 fi
-item "hardware plugin in use" \
-     "$(grep -oE '(mock_components/GenericSystem|fairino_hardware/FairinoHardwareInterface)' \
-        "$SRC/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro" 2>/dev/null | head -n1)"
+PLUGIN=$(grep -oE '(mock_components/GenericSystem|fairino_hardware/FairinoHardwareInterface)' \
+        "$SRC/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro" 2>/dev/null | head -n1)
+case "$PLUGIN" in
+    mock_components/GenericSystem)             MODE="SIMULATION" ;;
+    fairino_hardware/FairinoHardwareInterface) MODE="REAL ROBOT -- will fail with no robot attached" ;;
+    *)                                         MODE="could not read" ;;
+esac
+item "hardware plugin in use" "$PLUGIN"
+item "  -> mode"              "$MODE"
 item "controller update_rate" \
      "$(grep -oE 'update_rate:[[:space:]]*[0-9]+' \
         "$SRC/fairino5_v6_moveit2_config/config/ros2_controllers.yaml" 2>/dev/null | head -n1 | grep -oE '[0-9]+') Hz"
@@ -97,7 +110,9 @@ fi
 line
 
 echo "CAMERA"
-item "librealsense2"   "$(dpkg-query -W -f='${Version}' librealsense2 2>/dev/null)"
+for lr in librealsense2 librealsense2-utils ros-humble-librealsense2; do
+    v=$(dpkg-query -W -f='${Version}' "$lr" 2>/dev/null) && [ -n "$v" ] && item "$lr" "$v"
+done
 item "USB device"      "$(lsusb 2>/dev/null | grep -i intel | head -n1)"
 if command -v rs-enumerate-devices >/dev/null 2>&1; then
     item "firmware"    "$(rs-enumerate-devices -s 2>/dev/null | awk 'NR==3{print $NF}')"

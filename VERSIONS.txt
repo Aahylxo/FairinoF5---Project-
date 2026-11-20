@@ -1,11 +1,10 @@
 
 FAIRINO FR5 — recorded versions
-generated: 2026-11-20 02:55 UTC
+generated: 2026-11-20 02:59 UTC
 hostname : De-Vice
 ------------------------------------------------------------
 OPERATING SYSTEM
-  Windows build                      
-Microsoft Windows [Version 10.0.26300.9974]
+  Windows build                      Microsoft Windows [Version 10.0.26300.9974]
   WSL                                WSL version: 3.0.5.0
   Ubuntu                             Ubuntu 22.04.5 LTS
   kernel                             6.18.58.1-microsoft-standard-WSL2
@@ -13,9 +12,10 @@ Microsoft Windows [Version 10.0.26300.9974]
 ------------------------------------------------------------
 ROS 2
   ROS_DISTRO                         humble
-  ros2cli                            NOT FOUND
-  RMW                                <unset, using default>
-  ROS_LOCALHOST_ONLY                 0
+  ros-humble-ros2cli                 0.18.20-1jammy.20260907.215122
+  RMW                                <unset>   <-- expected rmw_fastrtps_cpp, see README Part 8
+  ROS_LOCALHOST_ONLY                 0   <-- expected 1, see README Part 8
+  CYCLONEDDS_URI                     <unset -- correct>
   ros-humble-desktop                 0.10.0-1jammy.20260916.003705
   ros-humble-moveit                  2.5.10-1jammy.20261006.203658
   ros-humble-ros2-control            2.54.3-1jammy.20261005.220306
@@ -30,7 +30,7 @@ ROS 2
 BUILD TOOLS
   gcc                                11.4.0
   cmake                              3.22.1
-  colcon                             colcon-argcomplete 0.3.3: up-to-date
+  colcon                             0.21.3
   git                                2.34.1
 ------------------------------------------------------------
 PYTHON
@@ -43,18 +43,23 @@ PYTHON
   python3-tk                         8.6
 ------------------------------------------------------------
 FAIRINO DRIVER
-  vendor driver                      NOT FOUND at /root/fairino_380_ws/src/frcobot_ros2
+  git tag                            NO .git FOLDER -- version cannot be proven
+  !! The driver source is present but its git history is not, so this
+  !! script cannot record which version you built. The project is
+  !! pinned to tag V3.0.0_RobotV3.8.0 (commit 7c683cf). See the note
+  !! under FAIRINO DRIVER in README Part 1.0 for how to restore it.
   hardware plugin in use             fairino_hardware/FairinoHardwareInterface
+    -> mode                          REAL ROBOT -- will fail with no robot attached
   controller update_rate             125 Hz
 ------------------------------------------------------------
 THIS REPOSITORY
-  git commit                         cdacd44
+  git commit                         46e336d
   git branch                         main
-  last commit                        2026-11-14  document trackers, mapping modes, depth, workspace markers, the DDS fix and the open-loop oscillation fix
-  uncommitted                        4 file(s)
+  last commit                        2026-11-20  add version recording, workspace/URDF/config documentation, RViz sensor visualisation, screenshot checklist and brief compliance map
+  uncommitted                        3 file(s)
 ------------------------------------------------------------
 CAMERA
-  librealsense2                      NOT FOUND
+  ros-humble-librealsense2           2.58.4-1jammy.20260830.174155
   USB device                         NOT FOUND
   firmware                           NOT FOUND
 ------------------------------------------------------------
@@ -70,7 +75,7 @@ PROJECT FILES
   teleop_node.py                     435 lines   md5 e4b238a4
   fairino_home.py                    199 lines   md5 f72ae364
   requirements.txt                   60 lines   md5 25210b3b
-  README.md                          2789 lines   md5 334c2869
+  README.md                          2812 lines   md5 fbc5b753
   FOLLOW_ALONG.md                    905 lines   md5 e1fec5c5
 ------------------------------------------------------------
 

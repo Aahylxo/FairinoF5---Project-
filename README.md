@@ -403,6 +403,29 @@ Exact pins, from `requirements.txt`. **These are load-bearing** — Part 4.8 exp
 
 **Do not `git pull` to main.** The tag and the firmware are a matched pair.
 
+> **If `versions.sh` says `NO .git FOLDER`**, the driver source is there but its history
+> is not, so nothing can prove which version was built. Check what you have:
+>
+> ```bash
+> ls -d ~/fairino_380_ws/src/frcobot_ros2/.git
+> cat ~/fairino_380_ws/.gitmodules 2>/dev/null
+> ```
+>
+> To restore it without touching the working files, re-clone beside it and compare:
+>
+> ```bash
+> cd /tmp
+> git clone --branch V3.0.0_RobotV3.8.0 \
+>     https://github.com/FAIR-INNOVATION/frcobot_ros2.git fr5-reference
+> diff -rq /tmp/fr5-reference ~/fairino_380_ws/src/frcobot_ros2 \
+>     --exclude=.git | head -40
+> ```
+>
+> Anything listed is a local change to vendor code. The only one this project
+> intends is `ros2_controllers.yaml` (`update_rate` 100 → 125) and the plugin line in
+> `fairino5_v6_robot.ros2_control.xacro`. **Anything else on that list is unexplained and
+> should be understood before a demonstration.**
+
 ### Robot and camera
 
 | | Value |
