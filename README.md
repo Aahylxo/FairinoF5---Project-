@@ -2259,6 +2259,8 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 
 ## Documentation
 
+- `RUN_SIMULATION.md` — short operating guide, no robot needed
+- `RUN_REAL_ROBOT.md` — short operating guide for the real arm, safety first
 - `FOLLOW_ALONG.md` — 49 steps, bare Windows laptop to a moving arm, every step with an
   expected result and a failure box
 - `README.md` — this file: why each step exists, the parameters, the full troubleshooting
@@ -2481,7 +2483,9 @@ fairino_380_ws/
 │       ├── fairino_msgs/                RemoteCmdInterface.srv
 │       ├── fairino_description/         STL meshes + fairino5_v6.urdf
 │       └── fairino5_v6_moveit2_config/  MoveIt config + demo.launch.py
-├── FOLLOW_ALONG.md                      START HERE — blind step-by-step setup
+├── FOLLOW_ALONG.md                      installing from scratch, 49 steps
+├── RUN_SIMULATION.md                    how to run it with no robot
+├── RUN_REAL_ROBOT.md                    how to run it on the real arm — READ FIRST
 ├── hand_teleop.py                       METHOD 2 — Cartesian teleoperation, all-in-one
 ├── teleop.launch.py                     METHOD 2 — camera + teleop in one launch
 ├── fr5_kinematics.py                    forward + inverse kinematics

@@ -125,10 +125,10 @@ INFO_TOPIC = "/camera/camera/color/camera_info"
 # This is what stops the arm reaching into the floor or folding into itself.
 # Tighten it for your bench; these are deliberately conservative.
 WORKSPACE = {
-    "z_min": 300.0,      # never below this height -- this is the floor guard
+    "z_min": 180.0,      # never below this height -- this is the floor guard
     "z_max": 900.0,
     "r_min": 250.0,      # stay out of the column above the base
-    "r_max": 700.0,      # inside the 922 mm reach, with margin
+    "r_max": 870.0,      # inside the 922 mm reach, with margin
 }
 
 # How far the tool may stray from the captured neutral position, per axis, in
@@ -192,6 +192,15 @@ MAX_LEAD_DEG = 0.0      # 0 = derive it from max_speed
 # If the arm falls further behind than this, it is not following and something
 # is wrong. Stop rather than keep commanding.
 AUTO_STOP_ERROR_DEG = 8.0
+
+# Frozen-feedback detector. If the command is asking for more than
+# FROZEN_DEMAND_DEG of motion and the reported position changes by less than
+# FROZEN_MOVE_DEG per frame for FROZEN_SECONDS, the arm is not moving and the
+# feedback cannot be trusted. Verified not to fire on a healthy arm even when
+# the hand moves fast enough to demand 91 degrees.
+FROZEN_MOVE_DEG = 0.02
+FROZEN_DEMAND_DEG = 2.0
+FROZEN_SECONDS = 1.5
 
 # The FR5 home pose, degrees. Tool ends up around (-497, -102, 477), which is
 # 696 mm from the base -- comfortably central, with room to move in every
@@ -665,6 +674,10 @@ class App:
         self.neutral_torso = None      # (yaw, reach, height) at capture
         self.hand_m = None             # smoothed (x, y, size) from Hands
         self.pinch_closed = False      # pinch state, with hysteresis
+        self.was_pinched = False       # previous frame, for edge detection
+        self.bad_feedback = None       # set when /joint_states is untrustworthy
+        self.prev_actual = None        # last feedback, to detect a frozen arm
+        self.still_for = 0.0           # seconds commanded-but-not-moving
         self.neutral_hand_m = None     # (x, y, size) at capture
         self.hand_xyz = None           # smoothed metric hand point, metres
         self.neutral_xyz = None        # metric hand point at capture
@@ -878,6 +891,10 @@ class App:
         if actual is None or now - a_stamp > STATE_TIMEOUT:
             self.reason = "no /joint_states - is the robot launched?"
             return
+        bad = self.feedback_bad(actual)
+        if bad:
+            self.reason = bad
+            return
         if self.hand is None:
             self.reason = ("cannot see your hand - hold it up to the camera"
                            if self.use_hands
@@ -1003,6 +1020,84 @@ class App:
         else:
             self.engage()
 
+    def feedback_bad(self, actual):
+        """Is this /joint_states reading obviously not the real arm?
+
+        The FR5 publishes exact zeros on all six joints when the driver fails
+        to read the controller -- it reports the failure as a position rather
+        than as an error. All-zeros is a physically reachable pose, but the arm
+        is never in it at startup, and treating a bad read as a real position
+        makes every downstream calculation wrong: the command is computed
+        against a pose the arm is not in, and the arm fights to close a gap
+        that does not exist. That is what shaking looks like.
+
+        Returns a reason string, or None if the reading looks sane.
+        """
+        if actual is None:
+            return None
+        deg = [math.degrees(a) for a in actual]
+        if all(abs(d) < 1e-6 for d in deg):
+            return ("/joint_states reads all zeros - the driver is not "
+                    "reading the arm. DO NOT ENGAGE")
+        for i, d in enumerate(deg):
+            lo, hi = K.SOFT_LIMITS_DEG[i]
+            if d < lo - 1.0 or d > hi + 1.0:
+                return (f"/joint_states says j{i+1} = {d:.1f} deg, outside "
+                        f"its limits - the reading is wrong. DO NOT ENGAGE")
+        return None
+
+    def pinch_required(self):
+        """Pinch gates motion only in hands mode, and only if not disabled."""
+        return self.use_hands and self.args.pinch
+
+    def moving_now(self):
+        """Is the arm allowed to follow the hand this instant?
+
+        Engaging arms the system; in hands mode the pinch is what actually
+        lets it move, so opening your fingers stops it at once without
+        disarming anything.
+        """
+        if not self.enabled:
+            return False
+        if self.pinch_required():
+            return self.pinch_closed
+        return True
+
+    def reanchor(self):
+        """Re-zero the hand-to-tool offset at the arm's present position.
+
+        Called when the pinch closes. Without it, re-pinching after moving
+        your hand elsewhere would command a jump equal to how far your hand
+        travelled while released. With it, releasing and re-pinching works
+        like lifting a mouse off the mat: the arm stays, your hand resets.
+        """
+        _frame, _fs, actual, a_stamp = self.node.grab()
+        if actual is None or time.time() - a_stamp > STATE_TIMEOUT:
+            return
+        if self.hand is None or self.neutral_pos is None:
+            return
+
+        T = K.fk(actual)
+        self.neutral_hand = np.array(self.hand, dtype=float)
+        self.neutral_pos = T[:3, 3].copy()
+        self.neutral_rot = T[:3, :3].copy()
+        self.held_target = None
+        self.neutral_hand_m = (None if self.hand_m is None
+                               else tuple(self.hand_m))
+        self.neutral_xyz = (None if self.hand_xyz is None
+                            else self.hand_xyz.copy())
+        self.neutral_torso = (None if self.yaw is None
+                              else (self.yaw, self.reach, self.height))
+        self.neutral_cyl = to_cylindrical(self.neutral_pos)
+        self.neutral_hand_cyl = hand_cylindrical(self.neutral_hand)
+        self.last_phi = self.neutral_hand_cyl[1]
+
+        # Start the rate limiter from where the arm actually is, not from
+        # wherever the command had drifted to before the release.
+        self.command = [math.degrees(a) for a in actual]
+        self.filtered = list(self.command)
+        self.last_desired = list(self.command)
+
     def engage(self, _event=None):
         _frame, _fs, actual, a_stamp = self.node.grab()
         now = time.time()
@@ -1013,6 +1108,10 @@ class App:
         if actual is None or now - a_stamp > STATE_TIMEOUT:
             self.reason = "no /joint_states - is the robot launched?"
             return
+        bad = self.feedback_bad(actual)
+        if bad:
+            self.reason = bad
+            return
         if not self.tracking:
             self.reason = ("cannot see your hand" if self.use_hands
                            else "cannot see your arm - step back into frame")
@@ -1022,8 +1121,11 @@ class App:
         self.command = [math.degrees(a) for a in actual]
         self.filtered = list(self.command)
         self.last_desired = list(self.command)
+        self.prev_actual = None
+        self.still_for = 0.0
         self.enabled = True
-        self.reason = "engaged"
+        self.reason = ("engaged - PINCH to move" if self.pinch_required()
+                       else "engaged")
         self.go.config(bg="#a93226", text=self.live_text)
 
     def disengage(self, _event=None):
@@ -1056,6 +1158,19 @@ class App:
         frame, f_stamp, actual, a_stamp = self.node.grab()
         image_fresh = frame is not None and (now - f_stamp) < IMAGE_TIMEOUT
         state_fresh = actual is not None and (now - a_stamp) < STATE_TIMEOUT
+
+        # A bad feedback reading is worse than none at all: it looks valid and
+        # every calculation downstream is then wrong. Checked every frame, not
+        # only at engage, because the driver can start lying mid-run.
+        self.bad_feedback = self.feedback_bad(actual) if state_fresh else None
+        if self.bad_feedback:
+            state_fresh = False
+            if self.enabled or self.homing:
+                self.enabled = False
+                self.homing = False
+                self.reason = self.bad_feedback
+                self.home_btn.config(text="0.  GO TO HOME POSE")
+                self.go.config(bg="#2d7a3e", text=self.idle_text)
 
         # ---------------- vision
         self.hand = None
@@ -1390,7 +1505,7 @@ class App:
             self.target_pos = self.held_target
             self.hits = off_hits + box_hits
 
-            if self.enabled and state_fresh:
+            if self.moving_now() and state_fresh:
                 T = np.eye(4)
                 T[:3, :3] = self.neutral_rot
                 T[:3, 3] = self.target_pos
@@ -1433,6 +1548,7 @@ class App:
                     max_step = self.args.max_speed * dt
                     actual_deg = [math.degrees(a) for a in actual]
                     lead = self.lead_for(dt)
+                    demand = list(self.command)
 
                     for i in range(6):
                         lo, hi = K.SOFT_LIMITS_DEG[i]
@@ -1441,6 +1557,12 @@ class App:
                                      -max_step, max_step)
                         self.command[i] = clamp(self.command[i] + step, lo, hi)
 
+                        # How far the command WANTED to be from the arm,
+                        # recorded before the clamp below. Measuring after the
+                        # clamp is useless -- the clamp has just forced it
+                        # within `lead`, so the auto-stop could never fire.
+                        demand[i] = self.command[i]
+
                         # Closed-loop guard: never get more than `lead` degrees
                         # ahead of the real arm. This is what stops the command
                         # running away and the arm oscillating to catch up.
@@ -1448,13 +1570,30 @@ class App:
                                                 actual_deg[i] - lead,
                                                 actual_deg[i] + lead)
 
-                    # If the arm is a long way behind, it is not following.
-                    worst = max(abs(c - a)
-                                for c, a in zip(self.command, actual_deg))
-                    if worst > self.args.auto_stop:
+                    # Is the arm actually moving? The lead clamp keeps the
+                    # command within `lead` of the reported position, so
+                    # "command minus position" can never grow and cannot be
+                    # used to detect a fault. What a frozen or lying feedback
+                    # looks like instead is: we are asking for real motion and
+                    # the reported position never changes.
+                    asking = max(abs(f - a)
+                                 for f, a in zip(self.filtered, actual_deg))
+                    moved = (0.0 if self.prev_actual is None else
+                             max(abs(a - p) for a, p
+                                 in zip(actual_deg, self.prev_actual)))
+                    self.prev_actual = list(actual_deg)
+
+                    if moved < FROZEN_MOVE_DEG and asking > FROZEN_DEMAND_DEG:
+                        self.still_for += dt
+                    else:
+                        self.still_for = 0.0
+
+                    if self.still_for > FROZEN_SECONDS:
                         self.enabled = False
-                        self.reason = (f"STOPPED: the arm is not following "
-                                       f"({worst:.1f} deg behind)")
+                        self.still_for = 0.0
+                        self.reason = ("STOPPED: commanding motion but the arm "
+                                       "is not moving - check the e-stop, the "
+                                       "teach pendant mode, and /joint_states")
                         self.go.config(bg="#2d7a3e", text=self.idle_text)
                     elif not self.args.dry_run:
                         self.node.send([math.radians(a) for a in self.command],
@@ -1489,9 +1628,13 @@ class App:
             else:
                 self.cells[i][2].config(text="---", fg="#555")
 
-        if self.homing:
+        if getattr(self, "bad_feedback", None):
+            self.status.config(text="BAD FEEDBACK - DO NOT ENGAGE", fg="#a93226")
+        elif self.homing:
             self.status.config(text="HOMING", fg="#1f5fa9")
-        elif self.enabled and ik_ok:
+        elif self.enabled and self.pinch_required() and not self.pinch_closed:
+            self.status.config(text="PINCH TO MOVE", fg="#1f5fa9")
+        elif self.moving_now() and ik_ok:
             self.status.config(text="MOVING", fg="#a93226")
         elif not image_fresh:
             self.status.config(text="no camera images", fg="#b26a00")
@@ -1512,7 +1655,7 @@ class App:
         self._marker_count = getattr(self, "_marker_count", 0) + 1
         if self._marker_count % 5 == 0:
             self.node.publish_markers(
-                self.target_pos if self.enabled else None)
+                self.target_pos if self.moving_now() else None)
 
         self.check_home(actual, state_fresh)
         self.root.after(int(1000.0 / LOOP_HZ), self.tick)
@@ -1550,6 +1693,12 @@ class App:
                 elif not self.pinch_closed and pinch < PINCH_ON:
                     self.pinch_closed = True
 
+                # Rising edge: re-zero so re-pinching never commands a jump.
+                if (self.pinch_closed and not self.was_pinched
+                        and self.enabled and self.pinch_required()):
+                    self.reanchor()
+                self.was_pinched = self.pinch_closed
+
                 self.tracking = True
                 self.hand = self.hand_m.copy()
 
@@ -1582,7 +1731,7 @@ class App:
                 cv2.line(view, pts[H_THUMB_TIP], pts[H_INDEX_TIP], col, 3,
                          cv2.LINE_AA)
                 cv2.putText(view,
-                            "PINCHED" if self.pinch_closed else "open",
+                            "PINCHED" if self.pinch_closed else "open  (pinch to move)",
                             (20, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.8, col, 2,
                             cv2.LINE_AA)
         else:
@@ -1590,6 +1739,7 @@ class App:
             self.hand_xyz = None
             self.depth_ok = False
             self.pinch_closed = False
+            self.was_pinched = False
             cv2.putText(view, "NO HAND", (20, 44),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (60, 60, 230), 2,
                         cv2.LINE_AA)
