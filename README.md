@@ -33,7 +33,7 @@ This maps each to where it lives.
 | | Required | Where | Status |
 |---|---|---|---|
 | 1 | Configure the robot in Ubuntu Linux | Parts 1.0–1.4, 2, 3 | **Done** — real arm driven via Method A and Method B |
-| 2 | RViz set up, sensor data visualised | Parts 3.4, 4.9 | **Done** — robot state, colour stream and depth point cloud |
+| 2 | RViz set up, sensor data visualised | Parts 3.4, **3.7**, 4.9 | RViz standalone and with MoveIt **done**; depth point cloud **pending a D455** |
 | 3 | MoveIt configured, motion and trajectory planning demonstrated | Part 3 | **Done** — planned and executed on the real arm |
 
 ### Documentation items
@@ -44,7 +44,7 @@ This maps each to where it lives.
 | Required dependencies and package installations | Part 1.0 (versions) · Part 1.1 · `requirements.txt` · Part 4.8 |
 | Workspace and package creation | **Part 1.4** |
 | Robot URDF and configuration files | **Part 3.0** · Part 6.1 (DH cross-check) |
-| Sensor integration and RViz visualization | Part 4 · **Part 4.9** |
+| Sensor integration and RViz visualization | **Part 3.7** (RViz by itself) · Part 4 · **Part 4.9** |
 | MoveIt configuration and trajectory planning | Part 3 |
 | Commands, troubleshooting steps, screenshots | Throughout · Part 8 (troubleshooting) · **Part 9 (screenshots)** |
 
@@ -83,6 +83,7 @@ the machine it runs on. Part 1.0 lists the pins and why each is pinned.
 - [3.4 Launch and verify](#34-launch-and-verify)
 - [3.5 Moving the arm](#35-moving-the-arm)
 - [3.6 Stopping](#36-stopping-method-b)
+- [3.7 RViz on its own — no MoveIt](#37-rviz-on-its-own--no-moveit)
 
 **[PART 4 — Camera: Intel RealSense D455](#part-4--camera-intel-realsense-d455)**
 - [4.1 What we are doing and why](#41-what-we-are-doing-and-why)
@@ -97,15 +98,8 @@ the machine it runs on. Part 1.0 lists the pins and why each is pinned.
 
 **[PART 5 — Hand tracking and teleoperation](#part-5--hand-tracking-and-teleoperation)**
 - [5.0 Two methods](#50-two-methods)
-- *Method 1 — joint mapping:*
-  - [5.1 Why three stages](#51-why-this-is-built-in-three-stages)
-  - [5.2 Phase 1 — the tracker](#52-phase-1--the-tracker)
-  - [5.3 Phase 2 — the mapping panel](#53-phase-2--the-mapping-panel)
-  - [5.4 Phase 3 — the safety layer](#54-phase-3--the-safety-layer)
-  - [5.5 Running the whole pipeline](#55-running-the-whole-pipeline)
-  - [5.6 Test in three stages](#56-test-in-three-stages--do-not-skip-stage-2)
-- *Method 2 — Cartesian IK:*
-  - [5.7 Cartesian hand teleoperation](#57-method-2--cartesian-hand-teleoperation)
+- [5.0 How this works](#50-how-this-works-in-one-picture)
+- [5.7 Cartesian hand teleoperation](#57-method-2--cartesian-hand-teleoperation)
   - [5.8 Trackers, modes and tuning](#58-trackers-modes-and-tuning)
     - [The open-loop oscillation, and the fix](#-the-open-loop-oscillation-and-the-fix) ← read before running on real hardware
 
@@ -157,121 +151,12 @@ ros2 launch ~/fairino_380_ws/teleop.launch.py hold:=true scale:=0.5
 ```
 
 That is Method 2 (Parts 5.7 and 5.8), and it is the one to demonstrate. **Before the
-first run on real hardware, read the oscillation note in Part 5.8.** The longer sequence
-below is Method 1, which uses five terminals and is kept for comparison.
+first run on real hardware, read the oscillation note in Part 5.8.**
+
+To see RViz **without** MoveIt — the robot model and transforms, configured by hand — see
+Part 3.7.
 
 ---
-
-## The long version — Method 1, five terminals
-
-Everything already installed, nothing connected to the real robot. Five terminals
-in VS Code (WSL), plus one admin PowerShell. **Every Ubuntu terminal starts with:**
-
-```bash
-source /opt/ros/humble/setup.bash
-```
-
-Full explanations: camera in Part 4, pipeline in Part 5.
-
-### 0 — Forward the camera into WSL (admin PowerShell)
-
-```powershell
-usbipd list
-usbipd attach --wsl --busid 2-4
-```
-
-Must then read **Attached**.
-`Not shared` → `usbipd bind --force --busid 2-4` first.
-`no device with busid` → unplugged, or on another port; use the BUSID the list shows.
-
-### 0b — Confirm the config is on the SIMULATED robot
-
-```bash
-grep plugin ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro
-```
-
-Must print `mock_components/GenericSystem`. If not:
-
-```bash
-sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSystem|' \
-  ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro
-```
-
-### 1 — Camera
-
-```bash
-pgrep -af realsense          # MUST be empty; else: pkill -f realsense2_camera_node
-lsusb | grep -i intel        # must show the D455
-
-ros2 launch realsense2_camera rs_launch.py \
-  rgb_camera.color_profile:=640x360x15 \
-  enable_depth:=false enable_infra1:=false enable_infra2:=false
-```
-
-Wait for `RealSense Node Is Up!`, then leave it alone.
-
-### 2 — Tracker
-
-```bash
-python3 ~/fairino_380_ws/arm_tracker.py
-```
-
-Green skeleton, `RIGHT ARM TRACKED`.
-
-### 3 — Simulated robot
-
-```bash
-cd ~/fairino_380_ws
-source install/local_setup.bash
-ros2 launch fairino5_v6_moveit2_config demo.launch.py
-```
-
-RViz opens. **Do not touch Plan or Execute** — teleoperation bypasses MoveIt.
-
-### 4 — Mapping panel
-
-```bash
-python3 ~/fairino_380_ws/joint_mapper.py
-```
-
-### 5 — Teleoperation
-
-```bash
-python3 ~/fairino_380_ws/teleop_node.py --toggle
-```
-
-### 6 — Drive it
-
-1. Mapper: **j3** → source **`shoulder_elev`**, gain `1.00`, offset `0.0`.
-   Leave the other five on `(none)`.
-2. Stand ~2 m back, whole torso in frame.
-3. Click **Capture neutral pose**.
-4. Raise and lower your arm — the j3 target should move.
-5. Teleop status should be green: *ready*. Click **CLICK TO START MOVING**.
-6. Raise and lower your arm. The FR5 moves in RViz, lagging behind you — that is
-   the 10 °/s rate limit working.
-
-Wrong direction → tick **invert**. Too small → raise **gain**. Twitchy →
-restart teleop with `--filter-hz 1.0`.
-
-**Use `shoulder_elev`, not `shoulder_azim`.** Azimuth is meaningless when the arm is
-near vertical or hanging down, and jumps around on noise there (Part 5.2).
-
-### Shutdown
-
-`Ctrl+C` each terminal, then optionally:
-
-```powershell
-usbipd detach --busid 2-4
-```
-
-### The two rules that cause every camera failure
-
-1. **`attach` every session.** It never persists across reboots, WSL restarts or unplugs.
-2. **One camera node, ever.** A second gives `errno=16 busy`, which triggers a hardware
-   reset and drops the usbipd attachment entirely.
-
-
 
 ---
 ---
@@ -1268,6 +1153,104 @@ That is the robot being released in the right order. Nothing is damaged.
 ---
 ---
 
+## 3.7 RViz on its own — no MoveIt
+
+**RViz and MoveIt are not the same thing**, and it is worth being able to show that.
+
+**RViz is a 3D viewer.** An empty window that draws whatever you add to it — a robot,
+camera data, transforms, markers. It commands nothing.
+
+**MoveIt is a motion planner.** It has no window of its own, so it borrows RViz. Every
+display in `demo.launch.py` was put there by MoveIt, not by you.
+
+This section brings up RViz with nothing preconfigured and adds the displays by hand.
+
+### One-time install
+
+```bash
+sudo apt update
+sudo apt install -y ros-humble-joint-state-publisher-gui
+```
+
+> `apt update` first. A stale package index gives `404 Not Found` on the `.deb`.
+> **Do not run `apt upgrade`** — it will offer to move MoveIt, ros2_control and the
+> RealSense driver, all of which currently work and are recorded in `VERSIONS.txt`.
+
+### Three terminals
+
+```bash
+# 1 -- publish the robot model
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+xacro src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.urdf.xacro \
+  > /tmp/fr5.urdf
+ros2 run robot_state_publisher robot_state_publisher /tmp/fr5.urdf
+```
+
+```bash
+# 2 -- sliders, one per joint
+source /opt/ros/humble/setup.bash
+ros2 run joint_state_publisher_gui joint_state_publisher_gui
+```
+
+```bash
+# 3 -- RViz, empty
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+rviz2
+```
+
+### Configure it yourself
+
+1. **Global Options → Fixed Frame** → `base_link`
+2. **Add → RobotModel** → set **Description Topic** to `/robot_description`
+3. **Add → TF**
+
+Drag a slider. The arm moves. **No MoveIt is running.**
+
+### ⚠ Both source lines in the RViz terminal
+
+Miss `source install/local_setup.bash` in terminal 3 and you get this:
+
+```
+RobotModel   Status: Error
+```
+
+TF still draws — the joint frames appear as red/green/blue triads — but **no arm**. The
+meshes are referenced as `package://fairino_description/meshes/...`, and RViz cannot
+resolve `package://` for a workspace it was never told about. The structure loads, every
+mesh fails.
+
+This is the clearest demonstration of what `local_setup.bash` actually does.
+
+### What the TF display is showing
+
+Each triad is one joint's coordinate frame — **red = X, green = Y, blue = Z** — with
+arrows from parent to child. That is the DH table of Part 6.1 drawn in 3D. Where a `d`
+offset moves a frame along Z or an `a` offset moves it along X, you are looking at it.
+
+### This is view-only
+
+The sliders publish `/joint_states`, which moves **the picture**. Nothing reaches the
+robot. To actually move the arm you need something that sends a trajectory to the
+controller — MoveIt's MotionPlanning panel, Method A, or the teleoperation in Part 5.
+
+**With the real robot connected, do not run `joint_state_publisher_gui` at all.**
+`/joint_states` then comes from the arm's own encoders, and a second publisher on the same
+topic makes RViz flicker between the real position and the slider position.
+
+| | Draws the robot | Commands the robot |
+|---|---|---|
+| RViz alone | yes | **no** |
+| RViz + MoveIt (Part 3) | yes | yes |
+| Method A (Part 2) | — | yes |
+| Hand teleoperation (Part 5) | yes | yes |
+
+---
+---
+
 # PART 4 — Camera: Intel RealSense D455
 
 ## 4.1 What we are doing and why
@@ -1482,7 +1465,7 @@ opencv-contrib-python==4.10.0.84
 mediapipe==0.10.14
 ```
 
-`mediapipe==0.10.14` is the last release with the `mp.solutions` API that `arm_tracker.py`
+`mediapipe==0.10.14` is the last release with the `mp.solutions` API that `hand_teleop.py`
 uses. Moving to mediapipe 1.x would require rewriting the tracker for the Tasks API plus
 downloading a separate `.task` model file.
 
@@ -1592,325 +1575,43 @@ the `/fr5_workspace` markers from Part 5.8, that is the demonstration layout.
 
 # PART 5 — Hand tracking and teleoperation
 
-**Goal:** the operator's right arm is tracked by the camera and drives the robot's joints
-in real time.
+**Goal:** the operator's hand is tracked by the camera, and its position in space becomes
+a target the robot's tool follows in real time.
 
 ```
-your arm → camera → arm_tracker.py  → /human_arm_angles
-                  → joint_mapper.py → /fr5_joint_targets
-                  → teleop_node.py  → SAFETY → /fairino5_controller/joint_trajectory → robot
+your hand → camera → hand_teleop.py → inverse kinematics → SAFETY
+                                    → /fairino5_controller/joint_trajectory → robot
 ```
 
-## 5.0 Two methods
+## 5.0 How this works, in one picture
 
-There are two working teleoperation methods in this repository. **Both are kept** — they
-take different approaches to the same problem and are worth comparing.
+One process does everything: vision, mapping, IK, safety, output.
 
-| | **Method 1 — joint mapping** (5.1 – 5.6) | **Method 2 — Cartesian IK** (5.7) |
-|---|---|---|
-| Input | your shoulder and elbow **angles** | your hand **position** in 3D |
-| Output | chosen joints driven directly | all six joints, solved by IK |
-| Config | 6 dropdowns, gains, offsets | 3 axis choices and a scale |
-| Floor protection | not possible | one line (`z_min`) |
-| Uses the FK/IK work | no | yes, centrally |
-| Processes | 3 (+ camera) | 1 (+ camera, one launch file) |
-| Scripts | `arm_tracker.py`, `joint_mapper.py`, `teleop_node.py` | `hand_teleop.py`, `teleop.launch.py` |
-
-**Method 2 is the better one** and the one to demonstrate. Method 1 is kept because it is
-simpler to explain, it is what the pipeline was built up from, and the failure that
-motivated Method 2 (5.7) is a genuinely instructive result.
-
-The safety chain — deadman, rate limiting, smoothing, clamping, freeze on tracking loss —
-is the same in both.
-
-## 5.1 Why this is built in three stages
-
-Pose estimation jitters. A landmark flickers a few pixels, the computed elbow angle jumps
-15°, and that goes straight to `ServoJ` on a 22 kg arm. **The safety layer is not a
-finishing touch — it is the project.**
-
-| Phase | Script | What it does | Robot? |
-|---|---|---|---|
-| 1 | `arm_tracker.py` | track the arm, compute angles | no |
-| 2 | `joint_mapper.py` | map human angles → robot joints | no |
-| 3 | `teleop_node.py` | safety layer, drive the robot | yes |
-
-Each phase runs as its own node and talks over ROS topics, so you can run 1 and 2 with no
-robot anywhere, and 3 against a **simulated** robot before any hardware is involved.
-
-## 5.2 Phase 1 — the tracker
-
-```bash
-source /opt/ros/humble/setup.bash
-python3 ~/fairino_380_ws/arm_tracker.py
-```
-
-Options:
-
-```bash
---source webcam          # a plain webcam instead of the RealSense
---width 1920             # bigger window (default 1280, 0 = native)
---no-mirror              # see yourself as others see you
---model-complexity 2     # slower, more accurate
---min-visibility 0.5     # looser landmark confidence threshold
-```
-
-`q` or `Esc` to quit.
-
-**Stand back ~2 m so your whole torso is in frame.** It needs both shoulders *and both
-hips* to work out which way you are facing.
-
-### What it measures
-
-MediaPipe Pose finds 33 body landmarks. We use the right shoulder (12), elbow (14) and
-wrist (16), plus the left shoulder and both hips to build a reference frame.
-
-| Angle | 0° | 90° | 180° |
-|---|---|---|---|
-| **shoulder_elev** | arm hanging straight down at your side | horizontal | straight up |
-| **shoulder_azim** | pointing straight out to your right | reaching forward | — (−90° = back) |
-| **elbow_flex** | fully folded, hand at shoulder | right angle | arm completely straight |
-| **wrist_roll** | arbitrary reference — unreliable, see below | | |
-
-**There is no pose where all four read zero.** Each angle has its own zero and they do not
-coincide. The one that surprises people is the elbow: **a straight arm is 180, not 0.**
-That is the anatomical convention — the angle *at* the joint. If you want "straight = 0",
-compute `180 − elbow_flex`.
-
-**Azimuth is meaningless when the arm hangs down.** The arm points almost straight down, so
-its left/right and forward/back components are tiny and the number jumps on noise. Do not
-map azimuth to a robot joint if you will be working with your arm low.
-
-### Three design decisions that matter
-
-**Detection runs on the unmirrored frame.** MediaPipe labels landmarks by the anatomy it
-sees, so running it on a mirrored image makes it call the operator's **left** arm "right".
-The script mirrors only the picture you see, never the picture it measures. Getting this
-wrong silently tracks the wrong arm and inverts the whole mapping.
-
-**Angles are computed in a frame attached to your torso, not the camera.** The script
-builds x (out to your right), y (up your spine), z (forward from your chest) from the
-shoulder and hip landmarks. Turning or stepping sideways does not change the numbers —
-only moving your arm does. Without this, walking across the room would command the robot.
-
-**Lost tracking publishes `NaN`, not 0.** A joint that cannot be seen confidently goes red
-and reads `---`. Phase 3 treats `NaN` as *freeze*; a zero would be a real command to a
-real pose.
-
-### Output
-
-`/human_arm_angles`, `Float32MultiArray`:
-
-```
-[shoulder_elev, shoulder_azim, elbow_flex, wrist_roll, tracking_ok]
-```
-
-### The wrist problem
-
-**MediaPipe's body model cannot see forearm rotation reliably.** It is inferred from a few
-hand landmarks and is noisy. Shoulder elevation, shoulder azimuth and elbow flexion are
-solid; wrist roll is not.
-
-The brief asks for three joints — shoulder, elbow, wrist — and the third is the weak link.
-Either map the two shoulder angles plus elbow, or drive the wrist from something else.
-**Worth raising with the instructor.**
-
-## 5.3 Phase 2 — the mapping panel
-
-```bash
-source /opt/ros/humble/setup.bash
-python3 ~/fairino_380_ws/joint_mapper.py
-```
-
-A GUI with the live human angles across the top and six rows, j1 to j6.
-
-Per row:
-
-| Control | What it does |
+| Stage | What happens |
 |---|---|
-| **source** | which human angle drives this joint, or `(none)` |
-| **invert** | flip the direction |
-| **gain** | robot degrees per human degree |
-| **offset** | where the joint sits when the input is zero |
-| **target** | the computed result, live |
+| **Track** | MediaPipe finds your hand (or whole arm) in the camera frame |
+| **Measure** | Its position becomes a 3D point — from the depth camera where available |
+| **Map** | That point becomes a target position for the robot's tool |
+| **Solve** | The closed-form IK (Part 6.1) turns the target into six joint angles |
+| **Protect** | Deadband, smoothing, rate limit, joint clamp, lead clamp, auto-stop |
+| **Send** | A joint trajectory goes to the controller |
 
-The target column colour-codes itself:
+**The IK is the heart of it.** Without a solver there is no way to turn "my hand is
+*there*" into six joint angles, which is why Part 6.1 exists and why this method uses it
+centrally.
 
-- **green** — inside conservative working limits
-- **orange** — outside those but still legal
-- **red CLAMPED** — hit an FR5 soft limit and was cut off
-- **red tracking lost** — that landmark is not visible
-
-Limits come from the FR5 spec, **not** the URDF — so j3 caps at ±150°, not the wrong
-±162° the vendor ships (Part 6.3).
-
-### Capture neutral pose
-
-Stand comfortably, press the button, and the mapping becomes *change from that pose*
-rather than absolute angle. "Arm relaxed at my side" maps to "robot at home" instead of
-some arbitrary pose.
-
-**This is the safer design** and it is what Phase 3 expects. It also sidesteps having to
-memorise which angle has which zero.
-
-### Choosing a mapping
-
-Mechanically any human angle can drive any robot joint. Some feel natural and some do not.
-Starting points worth trying:
-
-| Human | Robot | Why |
-|---|---|---|
-| shoulder_azim | j1 | both rotate the whole arm about a vertical axis |
-| shoulder_elev | j2 or j3 | both raise and lower the arm |
-| elbow_flex | j3 | both are the elbow |
-
-Save/Load writes `joint_mapping.json` next to the scripts.
-
-**Output:** `/fr5_joint_targets` — six joint targets in degrees plus a validity flag.
-Nothing consumes it until Phase 3 runs.
-
-## 5.4 Phase 3 — the safety layer
-
-```bash
-source /opt/ros/humble/setup.bash
-python3 ~/fairino_380_ws/teleop_node.py --dry-run
-```
-
-Options:
-
-```bash
---dry-run                # compute everything, publish nothing
---max-speed 5            # degrees per second per joint (default 10, max 45)
---filter-hz 1.0          # lower = smoother but laggier (default 2.0)
---tolerance 10           # max gap allowed when engaging (default 15 deg)
-```
-
-### The safety chain
-
-```
-/fr5_joint_targets
-    |
-    +-- validity check      NaN / tracking lost / stale -> FREEZE
-    +-- clamp               to the FR5 SOFT limits
-    +-- low-pass filter     absorbs pose-estimation jitter
-    +-- slew-rate limit     caps degrees per second, whatever you do
-    +-- deadman             motion only while the button is held
-    |
-/fairino5_controller/joint_trajectory
-```
-
-| Guard | What it stops |
-|---|---|
-| **Deadman button** | hold the mouse down to move; release = stop, instantly |
-| **Slew-rate limit** | caps every joint at `--max-speed` °/s no matter how fast you move |
-| **Low-pass filter** | pose jitter never becomes robot shake |
-| **Clamp** | FR5 soft limits, applied after the mapping |
-| **Engage gate** | refuses to start if a target is more than `--tolerance` from the real joint angle, so it cannot lurch on the first command |
-| **Freeze on loss** | tracking lost, `NaN`, or stale data → stops and holds position |
-| **Starts from actual** | on engage the command begins at the real joint angles, not the target |
-
-**Verified behaviour:** fed an instantaneous 60° step with `--max-speed 10`, the command
-takes **6 seconds** to arrive, moving at exactly 10 °/s throughout. The operator's arm can
-move as fast as it likes; the robot cannot.
-
-### Hold mode vs toggle mode
-
-**Default is hold** — press and keep holding the button; release stops. This is the
-safer design: letting go is the natural reaction if something goes wrong, and it cannot
-be left on by accident.
-
-**`--toggle`** gives click-on / click-off instead. Easier when you need both hands free
-or want to watch RViz without worrying about the pointer. A separate red **STOP** button
-appears beside it.
-
-**`Esc` or `Space` stops immediately in either mode.**
-
-A note on why hold mode is bound the way it is: it deliberately does *not* disengage when
-the pointer leaves the button. An earlier version did, and nudging the mouse a few pixels
-while watching RViz silently dropped out of motion. It does still stop on window focus
-loss, which is intentional — alt-tabbing away should not leave the robot live.
-
-For stage 3 on real hardware, prefer hold mode unless you have a specific reason not to.
-
-## 5.5 Running the whole pipeline
-
-Four terminals. **Each needs `source /opt/ros/humble/setup.bash` first, and each process
-is started once.**
-
-```bash
-# 1 — camera
-ros2 launch realsense2_camera rs_launch.py \
-  rgb_camera.color_profile:=640x360x15 \
-  enable_depth:=false enable_infra1:=false enable_infra2:=false
-
-# 2 — vision
-python3 ~/fairino_380_ws/arm_tracker.py
-
-# 3 — mapping panel
-python3 ~/fairino_380_ws/joint_mapper.py
-
-# 4 — teleoperation
-python3 ~/fairino_380_ws/teleop_node.py --dry-run
-```
-
-## 5.6 Test in three stages — do not skip stage 2
-
-### Stage 1 — no robot at all
-
-Run the four terminals above with `--dry-run`. Assign a source to j1 in the mapper, move
-your arm, and watch the target and commanded columns. Nothing is published anywhere.
-
-**What you are checking:** the mapping does what you expect, and the numbers are stable
-when you hold still.
-
-### Stage 2 — the simulated robot
-
-**This is the important one, and it is completely safe.** Put the config back to
-simulation:
-
-```bash
-sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSystem|' \
-  ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro
-
-grep plugin ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.ros2_control.xacro
-```
-
-Confirm it reads `mock_components/GenericSystem`, then:
-
-```bash
-ros2 launch fairino5_v6_moveit2_config demo.launch.py
-```
-
-Now run `teleop_node.py` **without** `--dry-run`. **Your arm drives the FR5 in RViz.**
-Fake robot, real everything else — the mapping, the directions, the speed limits, the
-deadman, the freeze-on-loss all get proven with nothing that can hurt anyone.
-
-**Expect to redo the mapping several times here.** That is the point of this stage.
-
-Do not move to stage 3 until the arm in RViz does what you intend, every time.
-
-### Stage 3 — the real robot
-
-Only after stage 2 feels correct, and only with:
-
-- [ ] A supervisor present
-- [ ] Hand on the physical e-stop
-- [ ] Part 0 completed
-- [ ] `--max-speed` still at its default or lower
-- [ ] Workspace clear for the whole arm
-
-Switch the plugin to the real hardware interface (Part 3.3), launch `demo.launch.py`,
-verify as in Part 3.4, then run `teleop_node.py`.
-
-**Remember the planning scene is empty** — MoveIt and this node know nothing about the
-table, the mount, the cables or you. Collision checking is not protecting you here.
----
+> **An earlier approach mapped human joint angles straight onto robot joints** — your
+> elbow drives j3, and so on. It is simpler to explain, and it was built and worked, but
+> it has one fatal property: **it has no idea where the tool ends up.** During testing it
+> drove the arm toward the floor while satisfying every joint limit, because joint limits
+> do not know where the floor is. That failure is why this method solves for tool
+> *position* instead, where a floor is one line of code. The old scripts remain in the
+> repository's git history.
 
 ## 5.7 METHOD 2 — Cartesian hand teleoperation
 
-**One process, one window.** `hand_teleop.py` replaces `arm_tracker.py` +
-`joint_mapper.py` + `teleop_node.py`, and `teleop.launch.py` starts it together with the
-camera.
+**One process, one window.** `hand_teleop.py` does vision, mapping, IK, safety and output
+in a single program, and `teleop.launch.py` starts it together with the camera.
 
 ```bash
 # terminal 1 -- the robot
@@ -2494,12 +2195,13 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
   and gives ~2 mm reach precision
 - **Kinematics:** FK and IK verified against each other over 2000 random poses,
   0 failures (Part 6.1)
-- **Method 1** (joint mapping) drove the simulated robot — j3 followed shoulder elevation
 - **Method 2** (Cartesian IK) drove the simulated robot in all three mapping modes and
   with both trackers
 - **Method 2 drove the real robot.** Hand position controlled the physical arm through
   the closed-form IK with workspace clamping, flip rejection and rate limiting
 - MoveIt motion planning executed on the real arm from RViz
+- **RViz driven standalone** — `robot_state_publisher` + `joint_state_publisher_gui` +
+  bare `rviz2`, with RobotModel and TF added by hand (Part 3.7)
 - DDS misconfiguration on the lab workstation diagnosed and fixed (Part 8)
 
 ## Measured
@@ -2529,6 +2231,13 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
   freezing the arm a second into every move
 - Workspace clamping added after the arm was driven toward the floor by a joint mapping
   that satisfied every joint limit. **Joint limits do not know where the floor is.**
+
+## Removed
+
+- **Method 1**, the three-stage joint-mapping teleoperation (`arm_tracker.py`,
+  `joint_mapper.py`, `teleop_node.py`). It worked in simulation, but mapping human joint
+  angles onto robot joints cannot know where the tool ends up — see the note in Part 5.0.
+  Superseded by the Cartesian method. **Still in git history** if it is ever wanted.
 
 ## Open
 
@@ -2683,9 +2392,8 @@ All of these come from the numpy 1.x vs 2.x split — see Part 4.8.
 | `No images on /camera/... yet` | RealSense node not running, or wrong topic — check `ros2 topic list \| grep camera` |
 | `NO ARM DETECTED` | Stand further back — both shoulders and both hips must be visible |
 | Angles read `---` | Landmark confidence below threshold — improve lighting, or lower `--min-visibility` |
-| Skeleton on the wrong arm | Detection must run unmirrored — fixed in the current `arm_tracker.py`, see Part 5.2 |
+| Skeleton on the wrong arm | Detection must run unmirrored. Fixed — if you see this, you are on an old copy of `hand_teleop.py` |
 | Azimuth jumps around wildly | Arm is hanging down, where azimuth is ill-defined — Part 5.2 |
-| Mapper: `waiting for /human_arm_angles` | `arm_tracker.py` is not running |
 | Teleop: `refused: no /joint_states` | the robot (real or mock) is not launched |
 | Teleop: `refused: j<n> off by <x>` | the engage gate — the mapping points somewhere far from the arm's real pose. Adjust offset, or capture neutral |
 | Teleop: `FROZE: tracking lost` | you left the camera's view, or a landmark dropped out |
@@ -2776,12 +2484,8 @@ fairino_380_ws/
 ├── FOLLOW_ALONG.md                      START HERE — blind step-by-step setup
 ├── hand_teleop.py                       METHOD 2 — Cartesian teleoperation, all-in-one
 ├── teleop.launch.py                     METHOD 2 — camera + teleop in one launch
-├── arm_tracker.py                       Method 1 phase 1 — vision, arm angles
-├── joint_mapper.py                      Method 1 phase 2 — mapping GUI
-├── teleop_node.py                       Method 1 phase 3 — safety + robot output
 ├── fr5_kinematics.py                    forward + inverse kinematics
 ├── fairino_home.py                      move to home position (Method A)
-├── joint_mapping.json                   saved mapping (created by joint_mapper.py)
 ├── requirements.txt                     pinned Python deps; apt deps in comments
 ├── versions.sh                          records every version -> VERSIONS.txt
 ├── VERSIONS.txt                         generated by versions.sh -- commit it
