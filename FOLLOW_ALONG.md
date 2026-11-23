@@ -143,7 +143,8 @@ sudo apt install -y git build-essential cmake \
   python3-pip python3-tk usbutils \
   ros-humble-ros2-control ros-humble-ros2-controllers \
   ros-humble-moveit ros-humble-cv-bridge \
-  ros-humble-realsense2-camera ros-humble-realsense2-description
+  ros-humble-realsense2-camera ros-humble-realsense2-description \
+  ros-humble-joint-state-publisher-gui
 ```
 
 Another large download. **`python3-pip` and `python3-tk` are not installed by default on
@@ -266,8 +267,18 @@ tag, the camera. It takes a few seconds and it is the first thing to look at whe
 something works on one laptop and not another. Keep `VERSIONS.txt`.
 
 **You should see:** `Ubuntu 22.04`, `ROS_DISTRO humble`, `numpy 1.26.4`,
-`mediapipe 0.10.14`, and git tag `V3.0.0_RobotV3.8.0`. Anything saying `NOT FOUND` in
-the ROS or Python sections means a step was missed.
+`mediapipe 0.10.14`, `rmw_fastrtps_cpp`, and `update_rate 125 Hz`.
+
+Some lines are **expected to look wrong** on a fresh install. These are normal:
+
+| Line | Why |
+|---|---|
+| `git tag  NO .git FOLDER` | The driver is committed into this project as plain files, so it has no history of its own. The version is pinned in README Part 1.0 |
+| `CAMERA ... NOT FOUND` | No camera plugged in yet — Section E |
+| `192.168.58.2  not reachable` | No robot connected — Section F |
+
+**Anything else saying `NOT FOUND` in the ROS or PYTHON sections means a step was
+missed.** Go back and find it before continuing.
 
 ## Step 18 — Confirm you are set to the SIMULATED robot
 
@@ -348,6 +359,58 @@ Press `Ctrl+C` in the RViz terminal when you want to stop.
 > You may see a wall of red text with `Segmentation fault` and `class_loader` when you
 > press Ctrl+C. **That is a known MoveIt bug on exit and is harmless** — the lines above
 > it will say the hardware shut down cleanly.
+
+## Step 20b — RViz on its own, without MoveIt (optional but worth doing)
+
+Step 19 opened RViz, but **MoveIt** configured it for you. This builds the same view by
+hand, which is what "set up RViz" means as a separate skill from "configure MoveIt".
+
+Stop Step 19 first (`Ctrl+C`) so nothing clashes. Then **three** terminals:
+
+```bash
+# 1 -- publish the robot model
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+xacro src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot.urdf.xacro \
+  > /tmp/fr5.urdf
+ros2 run robot_state_publisher robot_state_publisher /tmp/fr5.urdf
+```
+
+```bash
+# 2 -- a slider per joint
+source /opt/ros/humble/setup.bash
+ros2 run joint_state_publisher_gui joint_state_publisher_gui
+```
+
+```bash
+# 3 -- empty RViz   <-- BOTH source lines matter here
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+rviz2
+```
+
+In the RViz window, set it up yourself:
+
+1. **Global Options → Fixed Frame** → type `base_link`
+2. **Add → RobotModel** → set **Description Topic** to `/robot_description`
+3. **Add → TF**
+
+**You should see:** the grey arm, with a red/green/blue axis cross at every joint.
+Drag a slider — the arm moves.
+
+> **If it goes wrong**
+>
+> `RobotModel  Status: Error` and you get the coloured axes but **no arm** → you missed
+> `source install/local_setup.bash` in terminal 3. The 3D model files are found through
+> the workspace; without it RViz loads the skeleton and fails on every mesh. Close RViz,
+> source both lines, start again.
+>
+> `joint_state_publisher_gui: command not found` → it is in Step 11. Install it:
+> `sudo apt update && sudo apt install -y ros-humble-joint-state-publisher-gui`
+
+**The sliders move the picture, not a robot.** RViz only displays. See README Part 3.7.
 
 ---
 ---
