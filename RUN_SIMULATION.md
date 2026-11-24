@@ -31,6 +31,8 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 
 No rebuild needed. Check it again before moving on.
 
+> 💡 [Why does one line do this?](WHY.md#why-the-plugin-switch)
+
 ---
 
 # PART 1 — The robot on screen
@@ -136,6 +138,8 @@ Drag a slider. The arm moves. **No MoveIt anywhere.**
 
 **The sliders move the picture, not a robot.** RViz only displays.
 
+> 💡 [RViz vs MoveIt](WHY.md#why-rviz-and-moveit-are-different)
+
 **Stop all three before Part 3** — `joint_state_publisher_gui` publishes `/joint_states`
 and will fight anything else that does.
 
@@ -169,7 +173,7 @@ pkill -f realsense2_camera_node     # only if the second printed something
 ```
 
 > **Only ever one camera program at a time.** Two gives `Device or resource busy` and
-> breaks the attachment — you then redo Step 4.
+> breaks the attachment — you then redo Step 4. [Why?](WHY.md#why-only-one-camera-program)
 
 ## Step 5 — Start the robot (if it is not already up)
 
@@ -227,7 +231,7 @@ to `MOVING`. Open your fingers and it stops instantly.
 | up / down | tool up / down |
 
 Releasing works like lifting a mouse off the mat — the arm stays, and re-pinching carries
-on from there.
+on from there. [Why pinch?](WHY.md#why-pinch-to-move)
 
 **Stop:** the button, `Esc`, or `Space`.
 

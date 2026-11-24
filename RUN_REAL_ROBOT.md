@@ -119,6 +119,8 @@ proved that.)
 **Between `Starting ...please wait...` and that line, the driver publishes all zeros.**
 Engaging in that window is what made the arm shake. **Wait for it.**
 
+> 💡 [The full story of both times it shook](WHY.md#why-the-arm-shook)
+
 > **If `ros2_control_node` dies instead**, there will be a Chinese error about the SDK
 > connection. That means the driver could not reach the controller — go back to Steps 2–4.
 > Keep `~/launch.log`.
@@ -251,6 +253,8 @@ ros2 launch ~/fairino_380_ws/teleop.launch.py \
 | `hold:=true` | **Moves only while you hold the mouse button.** Let go and it stops. Not a toggle |
 | `scale:=0.5` | Half motion, so mistakes are half the size |
 | `height:=480` | D435 does not do 640×360 |
+
+> 💡 [Why a deadman switch at all?](WHY.md#why-pinch-to-move)
 
 ## Step 13 — Check the panel agrees with the arm
 
