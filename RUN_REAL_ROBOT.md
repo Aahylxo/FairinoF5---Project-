@@ -44,6 +44,39 @@ Three things, and all three have caused the problem before:
 - [ ] **Mode is AUTO, not MANUAL** — in manual the pendant owns the robot and ignores the network
 - [ ] **No application running on the pendant** — it holds the controller connection
 
+## Step 2b — ⭐ Check the robot for an alarm
+
+**Do this every session, before anything else. It is the single highest-value check in
+this document.**
+
+In a browser on the laptop:
+
+```
+http://192.168.58.2        username: admin     password: 123
+```
+
+**Any red warning triangle or error text — click it and clear it.**
+
+> ### Why this matters more than anything else here
+>
+> A latched fault makes the robot **refuse every motion command while still answering
+> reads**. So `/joint_states` looks perfect, the hardware shows `active`, both
+> controllers run, and MoveIt reports every move as **SUCCEEDED** — and the arm does
+> nothing.
+>
+> The only honest error is on this page. It cost three sessions to find.
+> [The full story](WHY.md#why-the-robot-refuses-commands-error-14)
+
+A typical one:
+
+```
+[Error] The command speed in the joint space of Axis 4
+        exceeds the limit and can be reset
+```
+
+**Clear it, then carry on.** If it comes straight back when you move, that is a real
+limits problem — see the troubleshooting at the end.
+
 ## Step 3 — Network
 
 Ethernet from the controller to the laptop. Laptop must be **192.168.58.1**, mask
@@ -92,7 +125,22 @@ grep plugin src/frcobot_ros2/fairino5_v6_moveit2_config/config/fairino5_v6_robot
 
 **Must print:** `<plugin>fairino_hardware/FairinoHardwareInterface</plugin>`
 
-No rebuild needed.
+Also check the controller rate is the vendor's original:
+
+```bash
+grep update_rate src/frcobot_ros2/fairino5_v6_moveit2_config/config/ros2_controllers.yaml
+```
+
+**Must say `100`.** If it says 125, set it back — 125 removes the timing slack that WSL
+needs and causes the arm to fault mid-move.
+[Why](WHY.md#why-update_rate-went-to-125-and-back)
+
+```bash
+sed -i 's/update_rate: 125/update_rate: 100/' \
+  src/frcobot_ros2/fairino5_v6_moveit2_config/config/ros2_controllers.yaml
+```
+
+No rebuild needed for either — both are config.
 
 ## Step 6 — Launch, and save the log
 
@@ -330,6 +378,30 @@ git status
 something that runs without hardware.
 
 ---
+
+# If the arm stops partway and MoveIt says SUCCEEDED
+
+That is a refused `ServoJ`. Check:
+
+```bash
+grep -c "REFUSED" ~/launch.log
+```
+
+Anything above 0 means the robot rejected commands mid-move.
+
+**In order:**
+
+| | Check |
+|---|---|
+| 1 | **The alarm** at `http://192.168.58.2`. Which axis does it name? |
+| 2 | **Velocity Scaling** in RViz — it resets to **1.0** every launch. Set it to **0.05** |
+| 3 | `grep update_rate .../ros2_controllers.yaml` — must be **100** |
+| 4 | `grep max_velocity .../joint_limits.yaml` — all six should be **3.0** or lower |
+| 5 | `grep ServoMoveStart ~/launch.log` — should say `servo stream open` |
+
+The FR5 is rated **180 °/s = 3.1416 rad/s**. The vendor's `joint_limits.yaml` shipped
+3.15 and 3.20, both *above* that, so MoveIt could plan trajectories the controller
+refuses — and j4/j5/j6 were the worst, which is why the alarm kept naming Axis 4.
 
 # Known open fault
 

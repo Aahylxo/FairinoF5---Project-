@@ -11,7 +11,7 @@ stay short.
 [two source lines](#why-two-source-lines) ·
 [colcon build](#why-colcon-build) ·
 [pinned versions](#why-pinned-versions) ·
-[numpy 1.x](#why-numpy-126) ·
+[numpy 1.x](#why-numpy-1264) ·
 [mediapipe 0.10.14](#why-mediapipe-01014) ·
 [the plugin switch](#why-the-plugin-switch) ·
 [RViz vs MoveIt](#why-rviz-and-moveit-are-different) ·
@@ -24,7 +24,9 @@ stay short.
 [the filters](#why-four-different-filters) ·
 [the shaking](#why-the-arm-shook) ·
 [one camera](#why-only-one-camera-program) ·
-[DDS settings](#why-the-dds-settings)
+[DDS settings](#why-the-dds-settings) ·
+[error 14](#why-the-robot-refuses-commands-error-14) ·
+[the update_rate mistake](#why-update_rate-went-to-125-and-back)
 
 ---
 
@@ -405,6 +407,109 @@ other, and **nothing reports an error** — which is what makes it horrible to d
 ```bash
 echo $RMW_IMPLEMENTATION $ROS_LOCALHOST_ONLY   # same in every terminal
 ```
+
+---
+
+## Why the robot refuses commands (error 14)
+
+The single most expensive thing in this project. Three sessions.
+
+### What it looks like
+
+```
+ServoJ指令下发错误,错误码:14
+```
+
+"ServoJ dispatch error, code 14." In one log it appeared **6,137 times** — about 250 a
+second.
+
+Meanwhile `/joint_states` reads perfectly, the hardware shows `active`, both controllers
+are running, and **MoveIt reports every move as SUCCEEDED.** The arm does nothing, or
+stops partway.
+
+### What it means
+
+Code 14 is FAIRINO's *"interface execution failed."* In practice: **the robot has
+latched a fault and is refusing all motion** until it is cleared. Reads keep working,
+which is what makes it so confusing.
+
+### Where the actual message is
+
+**Not in any terminal.** Open the robot's web interface:
+
+```
+http://192.168.58.2        username: admin     password: 123
+```
+
+The real message was sitting there the whole time:
+
+```
+[Error] The command speed in the joint space of Axis 4
+        exceeds the limit and can be reset
+```
+
+**Click to clear it.** The arm moves again immediately.
+
+> **This is the lesson.** Everything on the computer said the system was healthy. The one
+> piece of information that mattered was on the robot's own screen. When a robot will not
+> move and the software insists it is fine, **go and look at the robot.**
+
+### Why it kept coming back
+
+Clearing the alarm lets exactly one move through, then it faults again. Three causes
+were found, each real:
+
+1. **`joint_limits.yaml` allowed more speed than the robot accepts** — 180.5 and
+   183.3 °/s against a rated **180 °/s**. j4, j5 and j6 were the worst, which is why the
+   alarm always named Axis 4. Lowered to 171.9 °/s.
+2. **No `ServoMoveStart()`** — the SDK requires it before streaming ServoJ and the vendor
+   driver never calls it. Without the bracket the controller buffers each command
+   separately and the commanded position runs ahead of the arm. Patched.
+3. **`update_rate` at 125 Hz** — see below.
+
+### Why nobody noticed for three sessions
+
+**The driver returns OK when ServoJ is refused.** `write()` ignores the return code, so
+ros2_control is told the command landed, MoveIt reports success, and the only evidence is
+an INFO line among 250 identical ones per second.
+
+The patch now logs **one** ERROR naming the fix, and says when ServoJ starts working
+again.
+
+---
+
+## Why update_rate went to 125, and back
+
+**It is at 100. If yours says 125, change it back.**
+
+```bash
+sed -i 's/update_rate: 125/update_rate: 100/' \
+  ~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/config/ros2_controllers.yaml
+```
+
+### What happened
+
+The driver calls `ServoJ(..., 0.008, ...)` — "reach this in 8 ms." The controller ran
+every 10 ms. Two numbers describing one cycle and disagreeing, so the controller was
+changed to 125 Hz to match.
+
+### Why that was wrong
+
+The robot computes speed as **delta ÷ cmdT**, with cmdT fixed at 8 ms. At 100 Hz a
+command arrives every 10 ms but claims to need 8, so the arm arrives early and waits.
+**The 2 ms is slack.**
+
+WSL has no real-time kernel. That slack is what absorbs a late cycle. Without it, a
+delayed cycle means a bigger position delta still labelled 8 ms — speed over the limit,
+robot faults.
+
+### The bigger mistake
+
+**Nothing was failing when it was changed.** No symptom, no error. A live setting on a
+22 kg arm was changed because two numbers looked untidy on the page, it was never tested,
+and it went into the documentation as a "fix."
+
+A working system is not an invitation to tidy it.
 
 ---
 

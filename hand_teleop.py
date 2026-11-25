@@ -209,6 +209,30 @@ FROZEN_SECONDS = 1.5
 HOME_DEG = [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 
 
+def detect_simulation():
+    """Is ros2_control configured for the mock robot or the real one?
+
+    This matters for the all-zeros check below. The mock robot starts at
+    0,0,0,0,0,0 -- a real, correct reading. The real driver publishes
+    0,0,0,0,0,0 when it CANNOT read the arm. Same numbers, opposite meaning,
+    so the only way to tell them apart is to know which one is running.
+
+    Read from the same xacro that decides it. If the file cannot be read,
+    assume real hardware: the safe guess is the one that keeps the guard on.
+    """
+    path = os.path.expanduser(
+        "~/fairino_380_ws/src/frcobot_ros2/fairino5_v6_moveit2_config/"
+        "config/fairino5_v6_robot.ros2_control.xacro")
+    try:
+        with open(path, "r") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    if "mock_components/GenericSystem" in text:
+        return True
+    return False
+
+
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
@@ -676,6 +700,12 @@ class App:
         self.pinch_closed = False      # pinch state, with hysteresis
         self.was_pinched = False       # previous frame, for edge detection
         self.bad_feedback = None       # set when /joint_states is untrustworthy
+        if args.assume_real:
+            self.simulation = False
+        elif args.assume_sim:
+            self.simulation = True
+        else:
+            self.simulation = detect_simulation()
         self.prev_actual = None        # last feedback, to detect a frozen arm
         self.still_for = 0.0           # seconds commanded-but-not-moving
         self.neutral_hand_m = None     # (x, y, size) at capture
@@ -1037,8 +1067,12 @@ class App:
             return None
         deg = [math.degrees(a) for a in actual]
         if all(abs(d) < 1e-6 for d in deg):
-            return ("/joint_states reads all zeros - the driver is not "
-                    "reading the arm. DO NOT ENGAGE")
+            # In simulation this is where the mock robot starts, and it is
+            # telling the truth. On real hardware it means the driver could
+            # not read the arm and reported the failure as a position.
+            if not self.simulation:
+                return ("/joint_states reads all zeros - the driver is not "
+                        "reading the arm. DO NOT ENGAGE")
         for i, d in enumerate(deg):
             lo, hi = K.SOFT_LIMITS_DEG[i]
             if d < lo - 1.0 or d > hi + 1.0:
@@ -1816,6 +1850,12 @@ def main():
                     default=True,
                     help="do not use the depth camera; fall back to inferring "
                          "distance from how big the hand looks")
+    ap.add_argument("--assume-sim", action="store_true",
+                    help="treat an all-zeros reading as valid (simulation). "
+                         "Normally detected from the ros2_control plugin")
+    ap.add_argument("--assume-real", action="store_true",
+                    help="treat an all-zeros reading as a driver failure, "
+                         "whatever the plugin says")
     ap.add_argument("--no-pinch", dest="pinch", action="store_false",
                     default=True,
                     help="in hands mode, use the button instead of pinching")

@@ -221,6 +221,9 @@ stretched out
 
 **3. `2. CLICK TO START MOVING`** — button turns red
 
+> 💡 The simulated arm starts **stretched straight out** — that is the all-zeros pose,
+> and it is correct. `GO TO HOME POSE` folds it into the proper working position.
+
 **4. Pinch your thumb and index finger together.** The panel goes from `PINCH TO MOVE`
 to `MOVING`. Open your fingers and it stops instantly.
 
@@ -247,7 +250,7 @@ on from there. [Why pinch?](WHY.md#why-pinch-to-move)
 | `LIMIT: reach` | At the edge of the workspace. Bring your hand toward the middle |
 | `CAPTURE NEUTRAL` greyed out | Arm is not at home. Press GO TO HOME first |
 | `capture a neutral pose` | You skipped button 1 |
-| `BAD FEEDBACK` | Only happens on real hardware. Should never appear in simulation |
+| `BAD FEEDBACK - DO NOT ENGAGE` | The simulated robot starts at all-zeros, which is correct. If you see this in simulation, Step 0 is wrong — the plugin says real hardware. Fix it and relaunch, or add `--assume-sim` |
 | Drifts while you hold still | Relaunch with `deadband:=25.0 hand_smooth_hz:=1.5` |
 
 ## Quick checks

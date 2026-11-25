@@ -138,6 +138,21 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
         }
         RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),"初始指令位置: %f,%f,%f,%f,%f,%f",_jnt_position_command[0],\
         _jnt_position_command[1],_jnt_position_command[2],_jnt_position_command[3],_jnt_position_command[4],_jnt_position_command[5]);    
+        // --- PATCH: announce the servo stream -------------------------------
+        // The SDK requires ServoMoveStart() before ServoJ. Without it the
+        // controller buffers each ServoJ as a separate motion, the command
+        // runs ahead of the arm, and the catch-up trips a joint speed limit.
+        int servo_start = _ptr_robot->ServoMoveStart();
+        if(servo_start != 0){
+            RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
+                "ServoMoveStart failed, code %d. The robot may be in a fault "
+                "state -- open http://192.168.58.2 and clear the alarm.",
+                servo_start);
+        }else{
+            RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"),
+                "ServoMoveStart ok -- servo stream open.");
+        }
+        // --- end patch ------------------------------------------------------
         RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "机械臂硬件启动成功!");
         return hardware_interface::CallbackReturn::SUCCESS;
     }else{
@@ -151,6 +166,7 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
 hardware_interface::CallbackReturn FairinoHardwareInterface::on_deactivate(const rclcpp_lifecycle::State& previous_state)
 {
     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Stopping ...please wait...");
+    _ptr_robot->ServoMoveEnd();// PATCH: close the servo stream
     _ptr_robot->StopMotion();//停止机器人
     _ptr_robot->CloseRPC();//销毁实例，连接断开
     _ptr_robot.release();
@@ -194,9 +210,31 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
         //RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ下发位置:%f,%f,%f,%f,%f,%f",\
             cmd.jPos[0],cmd.jPos[1],cmd.jPos[2],cmd.jPos[3],cmd.jPos[4],cmd.jPos[5]);
         int returncode = _ptr_robot->ServoJ(&cmd,&extcmd,0,0,0.008,0,0);
+        // --- PATCH: say it once, loudly, with the remedy --------------------
+        // The original logged at INFO every control cycle -- 250 lines a
+        // second, which buries the one line that matters.
+        static int  last_servoj_code = 0;
+        static long servoj_refusals  = 0;
         if(returncode != 0){
-            RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ指令下发错误,错误码:%d",returncode);
+            if(returncode != last_servoj_code){
+                RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
+                    "ServoJ REFUSED by the controller, error code %d. The arm "
+                    "will not move until this clears. Open http://192.168.58.2 "
+                    "(admin / 123), read the alarm and clear it. Code 14 means "
+                    "'interface execution failed' and usually means the robot "
+                    "has latched a fault.", returncode);
+                last_servoj_code = returncode;
+                servoj_refusals  = 0;
+            }
+            servoj_refusals++;
+        }else if(last_servoj_code != 0){
+            RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                "ServoJ accepted again after %ld refused commands.",
+                servoj_refusals);
+            last_servoj_code = 0;
+            servoj_refusals  = 0;
         }
+        // --- end patch ------------------------------------------------------
     }else if(_control_mode == 1){//扭矩控制模式
         if (std::any_of(&_jnt_torque_command[0], &_jnt_torque_command[5],\
             [](double c) { return not std::isfinite(c); })) {

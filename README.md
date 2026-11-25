@@ -12,6 +12,8 @@ BITS Pilani Dubai Campus · Robotics Mechanisms
 ### **[▶ RUN SIMULATION](RUN_SIMULATION.md)** — no robot, nothing can break
 ### **[▶ RUN THE REAL ROBOT](RUN_REAL_ROBOT.md)** — read it all before you start
 
+### **[📖 HOW IT WORKS](HOW_IT_WORKS.md)** — understand the whole thing from scratch
+
 ---
 
 ## What this does
@@ -225,7 +227,9 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 |---|---|
 | **[RUN_SIMULATION.md](RUN_SIMULATION.md)** | How to run it with no robot |
 | **[RUN_REAL_ROBOT.md](RUN_REAL_ROBOT.md)** | How to run it on the real arm |
+| **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)** | **The whole project explained from nothing** — start here to understand it |
 | **[WHY.md](WHY.md)** | Why any of this is the way it is |
+| `patch_driver.sh` | Fixes two defects in the vendor's C++ driver |
 | **[REFERENCE.md](REFERENCE.md)** | Full detail on everything |
 | **[FOLLOW_ALONG.md](FOLLOW_ALONG.md)** | The long 49-step setup, with every failure mode |
 | `hand_teleop.py` | The hand control |
@@ -257,12 +261,28 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 
 ## ⚠️ Known problems
 
+- **The arm stops partway through a move and MoveIt reports SUCCEEDED.** The robot
+  latches a fault and refuses commands while still answering reads, so everything in
+  software looks healthy. **Check `http://192.168.58.2` (admin / 123) for an alarm.**
+  [The full story](WHY.md#why-the-robot-refuses-commands-error-14)
 - **`/joint_states` has failed twice** — once publishing nothing, once publishing all
   zeros while the arm was at home. [What happened](WHY.md#why-the-arm-shook)
 - **The camera is not in the robot model** — so MoveIt does not know it is there and
   would plan straight through it
 - **j3's limit in the model is ±162°, the real limit is ±150°** — the model is more
   permissive than the robot
+- **The camera needs WSL kernel 6.x.** An older kernel has no `uvcvideo` module, so
+  there is no `/dev/video*` and librealsense finds nothing even though `lsusb` sees it.
+  `wsl --update`, or use a machine with a newer kernel
+
+## 🔧 Fixed in the vendor's code
+
+| What | Where |
+|---|---|
+| `ServoJ` streamed without the required `ServoMoveStart()` | `patch_driver.sh` |
+| A refused `ServoJ` logged at INFO 250×/s while `write()` returned OK | `patch_driver.sh` |
+| `joint_limits.yaml` allowed 183 °/s against the FR5's rated 180 °/s | lowered to 171.9 |
+| `update_rate` changed to 125 — **a mistake, since reverted to 100** | [why](WHY.md#why-update_rate-went-to-125-and-back) |
 
 ---
 

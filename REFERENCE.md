@@ -312,9 +312,12 @@ Exact pins, from `requirements.txt`. **These are load-bearing** — Part 4.8 exp
 > ```
 >
 > Anything listed is a local change to vendor code. The only one this project
-> intends is `ros2_controllers.yaml` (`update_rate` 100 → 125) and the plugin line in
-> `fairino5_v6_robot.ros2_control.xacro`. **Anything else on that list is unexplained and
-> should be understood before a demonstration.**
+> intends are the plugin line in `fairino5_v6_robot.ros2_control.xacro`,
+> `joint_limits.yaml` (velocities lowered to 3.0), and
+> `fairino_hardware_interface.cpp` (the `ServoMoveStart` patch).
+> `ros2_controllers.yaml` should read `update_rate: 100` — the vendor's original value.
+> **Anything else on that list is unexplained and should be understood before a
+> demonstration.**
 
 ### Robot and camera
 
@@ -848,7 +851,10 @@ Two, both found by inspection and both recorded here rather than silently patche
 
 | Where | Defect | Status |
 |---|---|---|
-| `ros2_controllers.yaml` | `update_rate: 100` Hz against a driver that declares an 8 ms (125 Hz) ServoJ cycle | **Fixed** — set to 125 |
+| `ros2_controllers.yaml` | `update_rate` — originally 100 Hz | **Not a defect.** Changed to 125, then changed back. See 6.3 — the change was a mistake |
+| `joint_limits.yaml` | `max_velocity` 3.15 / 3.20 rad/s = 180.5 / 183.3 °/s, above the FR5's rated **180 °/s** | Lowered to 3.0 (171.9 °/s) |
+| `fairino_hardware_interface.cpp` | `ServoJ` streamed with no `ServoMoveStart()` / `ServoMoveEnd()`, which the SDK requires | **Patched** — `patch_driver.sh` |
+| `fairino_hardware_interface.cpp` | A refused `ServoJ` logs at INFO every cycle and `write()` returns OK, so MoveIt reports success while the arm stands still | **Patched** — logs once at ERROR |
 | `fairino5_v6.urdf` | j3 limit is ±162°, but the FR5 specification says ±150° | **Not fixed.** The URDF is more permissive than the robot. Planning can produce a trajectory the arm will refuse |
 
 The second is live. Nothing in this project drives j3 past 150°, but anyone planning
@@ -1939,8 +1945,8 @@ back — shaking in place.
 
 Homing has the same guards.
 
-**Also fixed at the same time:** `ros2_controllers.yaml` had `update_rate: 100` while the
-driver declares an 8 ms (125 Hz) ServoJ cycle. Now 125.
+**Changed at the same time, and later retracted:** `update_rate` was moved from 100 to
+125 Hz. That was a mistake and it is back at 100 — see Part 6.3.
 
 ### Configuration-flip rejection
 
@@ -2162,16 +2168,40 @@ Either keep well clear of j3 extremes, or fix it in
 
 Rebuild `fairino_description` after editing the URDF.
 
-### ⚠ Known defect — ServoJ rate mismatch
+### ⚠ RETRACTED — the ServoJ "rate mismatch"
 
-`ros2_controllers.yaml` sets `update_rate: 100` (10 ms per cycle), but `write()` calls
-`ServoJ(..., 0.008, ...)` — declaring an 8 ms cycle. ServoJ expects to be fed at the rate
-it is told.
+**Earlier versions of this document told you to change `update_rate` from 100 to 125.
+That advice was wrong. Set it back to 100.**
 
-**Symptoms:** jerky motion, or `ServoJ指令下发错误,错误码:<n>` in the log.
+```bash
+cd ~/fairino_380_ws
+sed -i 's/update_rate: 125/update_rate: 100/' \
+  src/frcobot_ros2/fairino5_v6_moveit2_config/config/ros2_controllers.yaml
+```
 
-**Fix:** set `update_rate: 125` in
-`src/frcobot_ros2/fairino5_v6_moveit2_config/config/ros2_controllers.yaml`.
+**The original reasoning:** `write()` calls `ServoJ(..., 0.008, ...)`, declaring an 8 ms
+cycle, while the controller ran every 10 ms. Two numbers describing the same cycle and
+disagreeing, so the controller was changed to match.
+
+**Why that was wrong.** The robot computes speed as **position delta ÷ cmdT**, and cmdT
+is hard-coded at 8 ms. At 100 Hz a command arrives every 10 ms but claims to need 8 ms,
+so the arm always arrives early and waits. **That 2 ms is slack, not a bug.**
+
+On a machine with no real-time guarantees — WSL has none — that margin is what absorbs a
+late cycle. Remove it and a delayed cycle means the controller's spline has advanced
+further, the next command carries a bigger delta, but still declares 8 ms. Speed =
+bigger delta ÷ 8 ms, over the limit, and the robot faults.
+
+**It is also how the change was made that was wrong.** Nothing was failing. There was no
+symptom. A live setting on a 22 kg arm was changed because two numbers looked untidy
+when read, the change was never tested, and it was written up here as a "fix" for a
+defect identified by reading rather than by observing.
+
+Another fork of this driver went the opposite way — changing cmdT to 10 ms to match a
+100 Hz controller — which supports the reading that the controller rate is the one to
+leave alone.
+
+**Suspected consequence:** see Part 7, the error-14 refusals of 25 November.
 
 ## 6.4 Frames
 
@@ -2228,8 +2258,11 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 - **The open-loop oscillation** — the arm shook in place on real hardware and had to be
   emergency-stopped. Cause and fix in Part 5.8. **Read that before the next hardware
   session.**
-- `ros2_controllers.yaml` `update_rate` was 100 Hz against a declared 8 ms (125 Hz)
-  ServoJ cycle. Now 125
+- `joint_limits.yaml` allowed 180.5–183.3 °/s against the FR5's rated 180 °/s, so MoveIt
+  could plan trajectories the controller refuses. Lowered to 171.9 °/s
+- `ServoJ` was streamed with no `ServoMoveStart()`. Patched
+- A refused `ServoJ` was invisible: INFO level, every cycle, and `write()` returned OK.
+  Now one ERROR naming the remedy
 - Mirror bug — the tracker followed the wrong arm because detection ran on the flipped
   frame
 - Flip guard compared against the lagging command instead of the previous IK result,
