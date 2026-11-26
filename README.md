@@ -1,7 +1,7 @@
 # FAIRINO FR5 — Robot Arm Project
 
-Control a 6-axis robot arm with ROS 2, MoveIt and RViz — **or with your hand**, through a
-depth camera.
+Control a 6-axis robot arm with ROS 2, MoveIt and RViz — with **RViz sliders alone**, or
+**with your hand**, through a depth camera.
 
 BITS Pilani Dubai Campus · Robotics Mechanisms
 
@@ -21,6 +21,7 @@ BITS Pilani Dubai Campus · Robotics Mechanisms
 | | |
 |---|---|
 | 🤖 **Move the arm** | Drag it in a 3D view, press Plan, press Execute |
+| 🎚 **RViz sliders, no MoveIt** | Drag a slider, the real arm glides there |
 | ✋ **Hand control** | A camera watches your hand. The arm follows it |
 | 📐 **The maths** | Forward and inverse kinematics, tested on 2000 positions |
 | 👁 **See it** | The robot, the workspace limits and the camera data, all in 3D |
@@ -229,12 +230,18 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 | **[RUN_REAL_ROBOT.md](RUN_REAL_ROBOT.md)** | How to run it on the real arm |
 | **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)** | **The whole project explained from nothing** — start here to understand it |
 | **[WHY.md](WHY.md)** | Why any of this is the way it is |
-| `patch_driver.sh` | Fixes two defects in the vendor's C++ driver |
 | **[REFERENCE.md](REFERENCE.md)** | Full detail on everything |
 | **[FOLLOW_ALONG.md](FOLLOW_ALONG.md)** | The long 49-step setup, with every failure mode |
 | `hand_teleop.py` | The hand control |
+| `teleop.launch.py` | Camera + hand control in one command (`depth:=false` for colour only) |
+| `slider_bridge.py` | RViz slider window → real arm, smooth and guarded |
+| `rviz_real.launch.py` | The robot + plain RViz, **no MoveIt** — used with the slider bridge |
+| `slider_controllers.yaml` | Controller config for that launch (`open_loop_control` on) |
 | `fr5_kinematics.py` | The maths — forward and inverse kinematics |
 | `nudge_j1.py` | Move one joint a known amount, safely |
+| `fairino_home.py` | Send the arm home through Method A |
+| `arm_tracker.py` | Phase 1 vision: your arm's angles on `/human_arm_angles`, moves nothing |
+| `patch_driver.sh` | Fixes two defects in the vendor's C++ driver |
 | `versions.sh` | Records every version installed |
 
 ---
@@ -245,13 +252,14 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 
 - Setup, build, versions recorded
 - **Typed commands move the real arm**
-- **MoveIt plans and executes on the real arm**
 - RViz on its own, and with MoveIt
 - Forward and inverse kinematics — **2000 / 2000, zero failures**
 - Hand control in simulation
 - **Hand control moved the real arm**
 - **MoveIt plans and executes on the real arm** — confirmed 26 Nov, once the robot was
   switched out of manual mode
+- **RViz sliders move the real arm with no MoveIt** — smooth, 26 Nov
+  ([how](RUN_REAL_ROBOT.md#part-5b--rviz-sliders-on-the-real-arm-no-moveit))
 
 ## ⏳ Left to do
 
@@ -259,7 +267,8 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 |---|---|
 | **Camera data in RViz** | Needs a RealSense plugged in. ~10 minutes |
 | **Screenshots** | Four that matter. Nothing blocking it |
-| **The `/joint_states` fault** | Needs the launch log from the lab |
+| **`/joint_states` pauses** | Mostly explained and worked around ([why](WHY.md#why-joint_states-arrived-in-bursts)); still seen now and then on WSL |
+| **Hand control: stamped goals** | Give `hand_teleop.py` the same stamped, open-loop goals as the slider bridge |
 
 ## ⭐ If the arm will not move and everything says it is fine
 
@@ -286,10 +295,11 @@ Change it on the pendant, or at `http://192.168.58.2` — the hand icon in the t
   `http://192.168.58.2` (admin / 123) for a red alarm and clear it
 - **`/joint_states` has failed twice** — once publishing nothing, once publishing all
   zeros while the arm was at home. [What happened](WHY.md#why-the-arm-shook)
+- **Subscribers can see `/joint_states` pause for ~1 s** even when the robot publishes a
+  clean 100 Hz. Best-effort subscriptions mostly fix it; a clean restart of everything
+  helps. [Why](WHY.md#why-joint_states-arrived-in-bursts)
 - **The camera is not in the robot model** — so MoveIt does not know it is there and
   would plan straight through it
-- **j3's limit in the model is ±162°, the real limit is ±150°** — the model is more
-  permissive than the robot
 - **The camera needs WSL kernel 6.x.** An older kernel has no `uvcvideo` module, so
   there is no `/dev/video*` and librealsense finds nothing even though `lsusb` sees it.
   `wsl --update`, or use a machine with a newer kernel
@@ -302,6 +312,8 @@ Change it on the pendant, or at `http://192.168.58.2` — the hand icon in the t
 | A refused `ServoJ` logged at INFO 250×/s while `write()` returned OK | `patch_driver.sh` |
 | `joint_limits.yaml` allowed 183 °/s against the FR5's rated 180 °/s | lowered to 171.9 |
 | `update_rate` changed to 125 — **a mistake, since reverted to 100** | [why](WHY.md#why-update_rate-went-to-125-and-back) |
+| j3 limit in the URDF was ±162° (the FR16/20/30 figure); the FR5's is ±150° | corrected in `fairino5_v6.urdf` |
+| The repo was committed with the plugin on real hardware | back on simulation, as it must be |
 
 ---
 
@@ -311,8 +323,9 @@ Change it on the pendant, or at `http://192.168.58.2` — the hand icon in the t
 - **Know where the e-stop is without looking**
 - **If the arm shakes — hit the e-stop. Do not wait.**
 
-It has shaken twice. Both were software faults, both are fixed and guarded against, and
-[the full story is here](WHY.md#why-the-arm-shook).
+It has shaken twice, and vibrated during slider testing. All were software faults, all are
+fixed and guarded against: [shaking](WHY.md#why-the-arm-shook) ·
+[vibration](WHY.md#why-the-sliders-vibrated).
 
 **Read [RUN_REAL_ROBOT.md](RUN_REAL_ROBOT.md) completely before your first run.**
 

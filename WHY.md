@@ -26,7 +26,10 @@ stay short.
 [one camera](#why-only-one-camera-program) ·
 [DDS settings](#why-the-dds-settings) ·
 **[error 14 — THE ANSWER](#why-the-robot-refuses-commands-error-14)** ·
-[the update_rate mistake](#why-update_rate-went-to-125-and-back)
+[the update_rate mistake](#why-update_rate-went-to-125-and-back) ·
+[sliders need a bridge](#why-the-sliders-need-a-bridge) ·
+[slider vibration](#why-the-sliders-vibrated) ·
+[/joint_states in bursts](#why-joint_states-arrived-in-bursts)
 
 ---
 
@@ -554,6 +557,80 @@ robot faults.
 and it went into the documentation as a "fix."
 
 A working system is not an invitation to tidy it.
+
+---
+
+## Why the sliders need a bridge
+
+The brief was "move the robot using only RViz" — the slider window, not MoveIt. Out of
+the box that cannot work: `joint_state_publisher_gui` **publishes joint angles on
+`/joint_states`**, and RViz draws them. Nothing reaches the controller, so only the
+picture moves.
+
+Pointing the slider window at the real robot directly would be dangerous, three ways:
+
+1. **It would fight the real feedback.** `/joint_states` is also where the robot reports
+   where it is. Two publishers on one topic and everything downstream reads positions the
+   arm is not in. So `slider_bridge.py` starts the window **remapped** onto
+   `/slider_joint_states`.
+2. **Every slider starts at 0** — the arm stretched straight out, the pose behind the
+   second shaking incident. The bridge starts the window with its sliders set to the
+   arm's **real** pose, and sends nothing until every slider is within 3° of the arm.
+3. **A slider can be flicked 180° in a tenth of a second.** The bridge never asks for
+   more than 5 °/s per joint, and never more than 1° ahead of where the controller is.
+
+`rviz_real.launch.py` starts the robot without `move_group`, so it is genuinely "RViz and
+sliders, no MoveIt".
+
+---
+
+## Why the sliders vibrated
+
+Getting the slider bridge smooth took several versions on the real arm. Each finding is
+in the code now:
+
+| Version | What the arm did | Cause |
+|---|---|---|
+| Stream a tiny step every 40 ms, hold when feedback pauses | Moved in jerks | Feedback paused ~1 s at a time (next section); every pause froze it |
+| One whole goal per slider change, "like MoveIt" | Robot alarm: *command speed of axis 6 exceeds the limit* | A long goal plus any stall: on waking, the controller jumps to where the goal says it should be by now — 5° in one 8 ms cycle |
+| Tiny steps again, re-sent every 40 ms even when still | **Vibrated with the sliders untouched** | Re-sending the same point restarts the controller's interpolation from the *measured* position every 40 ms — a back-and-forth pull |
+| Tiny steps, sent only on change, open loop | Smooth path, still buzzing | **Every goal arriving unstamped makes the controller hold for one 10 ms cycle** before moving — a 10–25 Hz stutter |
+| **Current:** 1° segments, 10 Hz, stamped, open loop, timed from a model of the controller | Smooth | — |
+
+The two settings that matter, both standard ROS:
+
+- **`open_loop_control: true`** (`slider_controllers.yaml`) — the JointTrajectoryController
+  starts each new goal from its **last command**, not the noisy measured position. Only
+  `rviz_real.launch.py` uses it; MoveIt keeps the vendor's file.
+- **`header.stamp` = send time** on every goal — the controller picks the motion up
+  mid-way instead of restarting it.
+
+Because open loop makes the controller predictable, the bridge models it exactly
+(`class Segment`) and times each segment from where the reference is *now*, so the speed
+stays constant.
+
+---
+
+## Why /joint_states arrived in bursts
+
+With only the robot running, `ros2 topic hz /joint_states` showed a clean **100 Hz,
+max gap 12 ms**. Yet a script subscribing to it received it in **bursts about once a
+second**.
+
+The difference was the subscription's QoS:
+
+- `ros2 topic hz` subscribes **best-effort** — take whatever arrives, never wait.
+- The scripts subscribed **reliable** (the default when you pass `10`). If DDS drops one
+  sample, a reliable subscription holds back everything after it until the lost one is
+  re-sent — on WSL, roughly a second.
+
+For a 100 Hz state stream only the newest sample matters, so `slider_bridge.py`,
+`nudge_j1.py` and `hand_teleop.py` now subscribe with `qos_profile_sensor_data`
+(best-effort). The pauses did not vanish completely in every session — a clean restart of
+everything helped most — which is why the slider bridge still treats any feedback pause
+as a possible control-loop stall and limits itself to 1° until feedback returns.
+
+This is also the most likely explanation for the old "teleop reports `FROZE`" fault.
 
 ---
 

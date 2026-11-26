@@ -63,6 +63,7 @@ except ImportError:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
@@ -309,7 +310,12 @@ class TeleopNode(Node):
                     f"webcam {args.device} opened but returned no frame. "
                     f"Try --device 1.")
 
-        self.create_subscription(JointState, "/joint_states", self.on_state, 10)
+        # Best-effort, like `ros2 topic hz`: a reliable subscription to the
+        # 100 Hz /joint_states received it in ~1 s bursts on WSL (see
+        # WHY.md#why-joint_states-arrived-in-bursts). Only the newest sample
+        # matters, so never wait for a lost one.
+        self.create_subscription(JointState, "/joint_states", self.on_state,
+                                 qos_profile_sensor_data)
         self.pub = self.create_publisher(JointTrajectory, CONTROLLER_TOPIC, 10)
         self.marker_pub = self.create_publisher(MarkerArray, "/fr5_workspace", 1)
 

@@ -13,6 +13,8 @@ Arguments
 ---------
     dry_run:=true        compute everything, publish nothing
     hold:=true           hold-to-move instead of click-to-toggle
+    depth:=false         colour only: no depth stream (if frames drop over WSL);
+                         distance is then estimated from hand size, ~9x noisier
     scale:=1.8           hand motion amplification
     max_speed:=5.0       degrees per second per joint
     filter_hz:=1.0       low-pass cutoff, lower is smoother
@@ -38,6 +40,7 @@ ARGUMENTS = [
     ("device", "0", "camera index when source:=webcam"),
     ("dry_run", "false", "compute everything, publish nothing"),
     ("hold", "false", "hold-to-move instead of click-to-toggle"),
+    ("depth", "true", "true = aligned depth for distance; false = colour only"),
     ("scale", "1.0", "hand motion amplification"),
     ("max_speed", "5.0", "degrees per second per joint"),
     ("filter_hz", "2.0", "low-pass cutoff, lower is smoother"),
@@ -61,9 +64,13 @@ def launch_setup(context, *_args, **_kwargs):
 
     colour_profile = f"{arg('width')}x{arg('height')}x{arg('fps')}"
 
-    # Depth and the infrared streams are off: the tracker only uses colour, and
-    # the virtual USB link into WSL cannot carry the full set without dropping
-    # frames. See README Part 4.5.
+    # Depth is ON by default and aligned to the colour image: hand_teleop.py
+    # reads /camera/camera/aligned_depth_to_color/image_raw for the hand's
+    # distance (~2 mm jitter, vs ~18.5 mm estimating it from hand size -- see
+    # WHY.md#why-a-depth-camera). Without the depth stream it silently falls
+    # back to the hand-size estimate. The infrared streams stay off. If the
+    # virtual USB link into WSL drops frames, use depth:=false.
+    use_depth = is_true(arg("depth"))
     camera = Node(
         package="realsense2_camera",
         executable="realsense2_camera_node",
@@ -72,7 +79,14 @@ def launch_setup(context, *_args, **_kwargs):
         output="screen",
         parameters=[{
             "rgb_camera.color_profile": colour_profile,
-            "enable_depth": False,
+            "enable_depth": use_depth,
+            "align_depth.enable": use_depth,
+            # A small depth stream: the D455's default 848x480x30 is more than
+            # the virtual USB link into WSL carries (REFERENCE.md 4.5). The
+            # parameter is spelled two ways across realsense-ros 4.x releases;
+            # the one a release does not know is ignored.
+            "depth_module.depth_profile": f"480x270x{arg('fps')}",
+            "depth_module.profile": f"480x270x{arg('fps')}",
             "enable_infra1": False,
             "enable_infra2": False,
         }],
@@ -109,7 +123,7 @@ def launch_setup(context, *_args, **_kwargs):
             "  FR5 hand teleoperation\n"
             "  ----------------------\n"
             f"  mode     : {mode}\n"
-            f"  camera   : {'RealSense ' + colour_profile + ', depth off' if arg('source') == 'ros' else 'webcam index ' + arg('device')}\n"
+            f"  camera   : {'RealSense ' + colour_profile + (', aligned depth on' if use_depth else ', depth off (hand-size estimate)') if arg('source') == 'ros' else 'webcam index ' + arg('device')}\n"
             f"  scale    : {arg('scale')} x\n"
             f"  max speed: {arg('max_speed')} deg/s per joint\n"
             "\n"

@@ -222,6 +222,9 @@
       </geometry>
     </collision>
   </link>
+  <!-- j3 limit corrected to the FR5's +/-150 deg (2.6180 rad). The vendor file had
+       +/-162 deg (2.8274), the FR16/20/30 figure, so MoveIt could plan past the
+       FR5's own soft limit. -->
   <joint
     name="j3"
     type="revolute">
@@ -235,8 +238,8 @@
     <axis
       xyz="0 0 1" />
     <limit
-      lower="-2.8274"
-      upper="2.8274"
+      lower="-2.6180"
+      upper="2.6180"
       effort="150"
       velocity="3.15" />
     <calibration
@@ -246,8 +249,8 @@
       damping="0"
       friction="0" />
     <safety_controller
-      soft_lower_limit="-2.8274"
-      soft_upper_limit="2.8274"
+      soft_lower_limit="-2.6180"
+      soft_upper_limit="2.6180"
       k_position="15"
       k_velocity="10" />
   </joint>

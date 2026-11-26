@@ -21,9 +21,10 @@
 >
 > Check you are on the current code:
 > ```bash
-> grep -c FROZEN_SECONDS ~/fairino_380_ws/hand_teleop.py
+> grep -c FROZEN_SECONDS ~/fairino_380_ws/hand_teleop.py        # hand control
+> grep -c header.stamp   ~/fairino_380_ws/slider_bridge.py      # sliders
 > ```
-> **If that prints `0`, stop. Do not run on hardware.** Update first.
+> **If either prints `0`, stop. Do not run on hardware.** Update first.
 
 ---
 
@@ -243,7 +244,7 @@ ros2 topic info /joint_states --verbose | grep -i "publisher count"
 ```
 
 - Both controllers **`active`**
-- `hz` around **125**
+- `hz` around **100**
 - **`Publisher count: 1`** — more than one means something else is publishing, which is a
   hazard, not a nuisance
 
@@ -252,7 +253,8 @@ ros2 topic info /joint_states --verbose | grep -i "publisher count"
 # PART 4 — First movement
 
 Start with **one joint, 10 degrees**, from a script, so the move is exact and nothing
-else can move.
+else can move. Terminal 1 from Step 6 stays running; this goes in terminal 2 (both
+source lines).
 
 ```bash
 cd ~/fairino_380_ws
@@ -297,6 +299,65 @@ someone. Set them before anything else, every time.
 > **The planning scene is empty.** MoveIt does not know about your table, the camera, or
 > anything else in the cell, and will plan straight through them. **You are the collision
 > checker.**
+
+---
+
+# PART 5b — RViz sliders on the real arm, no MoveIt
+
+The slider window drives the real arm, with **no MoveIt running**. Do it in simulation
+first (`RUN_SIMULATION.md` Part 2b) — same commands.
+[How it works](HOW_IT_WORKS.md#7-rviz-sliders-on-the-real-arm-no-moveit) ·
+[why it is built this way](WHY.md#why-the-sliders-need-a-bridge)
+
+**Steps 1–5 still apply** — AUTO, no alarm, network, nothing else connected, plugin on
+real hardware. If `demo.launch.py` is running, stop it: this replaces it.
+
+**Terminal 1** — the robot and a plain RViz:
+
+```bash
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+ros2 launch ~/fairino_380_ws/rviz_real.launch.py 2>&1 | tee ~/launch.log
+```
+
+**Wait for `Successful 'activate'`.** Then Step 7: `/joint_states` must **not** be all
+zeros.
+
+**Terminal 2** — the sliders:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/fairino_380_ws/install/local_setup.bash
+python3 ~/fairino_380_ws/slider_bridge.py --dry-run    # computes, sends nothing
+python3 ~/fairino_380_ws/slider_bridge.py              # asks you to type YES
+```
+
+1. It prints the arm's position, asks for **`YES`**, opens the slider window **with the
+   sliders already at the arm's real angles**, and says **`ARMED`**.
+2. **Leave it untouched for 10 seconds.** The arm must be completely still — no hum. If
+   it vibrates with nothing touched: **e-stop**, and you are on old code.
+3. Drag **one** slider a few degrees. The arm glides there at **5 °/s**. RViz follows the
+   **real arm**, not the sliders.
+
+| Terminal says | Meaning |
+|---|---|
+| `not armed - move these sliders to the arm` | Sliders did not start at the arm's pose. Drag the listed ones until they match |
+| `gap ~12 ms` | Feedback healthy |
+| `gap ~1000 ms` | Feedback pausing — motion pauses too, on purpose. Restart everything cleanly ([why](WHY.md#why-joint_states-arrived-in-bursts)) |
+| `FAULT ... arm is not following` | Alarm, MANUAL mode, or the web speed box at 0 — Steps 2b/2c |
+| `FAULT ... all zeros` | The driver lost the arm — check for an alarm, relaunch |
+
+**The slider window shows radians.** Home is j1…j6 =
+`0, -1.5708, 1.5708, -1.5708, -1.5708, 0`. Move one joint at a time. **Center** returns
+the sliders to where the arm was when the bridge started — a real move.
+
+**To stop:** close the slider window or `Ctrl+C` terminal 2. The arm finishes its last
+segment (under a degree) and holds. **The e-stop is still the real stop.**
+
+> **A latched alarm will not clear while terminal 1 is running** — ros2_control keeps
+> streaming `ServoJ` and the controller re-latches it. Stop everything, then clear it at
+> `192.168.58.2`, or run `ros2_cmd_server` and send `ResetAllError()`.
 
 ---
 
@@ -368,7 +429,7 @@ press `Esc`. Know what each feels like **before** you need it.
 
 ---
 
-# If the arm shakes
+# If the arm shakes or vibrates
 
 1. **E-STOP.** Immediately.
 2. `Ctrl+C` every terminal.
@@ -438,10 +499,14 @@ refuses — and j4/j5/j6 were the worst, which is why the alarm kept naming Axis
 all zeros while the arm was at home. Both times the hardware component reported `active`
 with all six interfaces `[claimed]`, so the status is not a reliable indicator.
 
-**If it happens again, keep `~/launch.log`** and send the first 40 lines. README Part 7
-has the full history.
+Separately, **subscribers can see it pause for ~1 s** while `ros2 topic hz` shows a clean
+100 Hz. The scripts now subscribe best-effort, which mostly fixes it, and the slider
+bridge treats any pause as a possible stall. [Why](WHY.md#why-joint_states-arrived-in-bursts)
+
+**If it happens again, keep `~/launch.log`** and send the first 40 lines. REFERENCE.md
+Part 7 has the full history.
 
 ---
 
-**Full explanations:** `README.md`. **Simulation:** `RUN_SIMULATION.md`.
+**How it works:** `HOW_IT_WORKS.md`. **Why:** `WHY.md`. **Simulation:** `RUN_SIMULATION.md`.
 **Installing from scratch:** `FOLLOW_ALONG.md`.

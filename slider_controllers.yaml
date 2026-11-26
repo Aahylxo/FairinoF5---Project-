@@ -1,0 +1,40 @@
+# slider_controllers.yaml -- used ONLY by rviz_real.launch.py (slider control).
+# A copy of the vendor's ros2_controllers.yaml with one addition:
+#
+#   open_loop_control: true
+#
+# By default the JointTrajectoryController starts every NEW trajectory from
+# the arm's MEASURED position. The slider bridge sends a new short trajectory
+# every 40 ms while moving, so the start point kept jumping between the
+# measurement and the command, and the arm vibrated. Open loop starts each new
+# trajectory from the controller's last commanded position instead, so
+# consecutive commands join up smoothly.
+#
+# demo.launch.py / MoveIt still use the vendor's original file, unchanged.
+
+# This config file is used by ros2_control
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    fairino5_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+fairino5_controller:
+  ros__parameters:
+    joints:
+      - j1
+      - j2
+      - j3
+      - j4
+      - j5
+      - j6
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+    open_loop_control: true

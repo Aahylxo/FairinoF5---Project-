@@ -267,7 +267,7 @@ tag, the camera. It takes a few seconds and it is the first thing to look at whe
 something works on one laptop and not another. Keep `VERSIONS.txt`.
 
 **You should see:** `Ubuntu 22.04`, `ROS_DISTRO humble`, `numpy 1.26.4`,
-`mediapipe 0.10.14`, `rmw_fastrtps_cpp`, and `update_rate 125 Hz`.
+`mediapipe 0.10.14`, `rmw_fastrtps_cpp`, and `update_rate 100 Hz`.
 
 Some lines are **expected to look wrong** on a fresh install. These are normal:
 

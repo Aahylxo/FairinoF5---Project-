@@ -89,6 +89,7 @@ the machine it runs on. Part 1.0 lists the pins and why each is pinned.
 - [3.5 Moving the arm](#35-moving-the-arm)
 - [3.6 Stopping](#36-stopping-method-b)
 - [3.7 RViz on its own — no MoveIt](#37-rviz-on-its-own--no-moveit)
+- [3.8 RViz sliders on the real arm — no MoveIt](#38-rviz-sliders-on-the-real-arm--no-moveit)
 
 **[PART 4 — Camera: Intel RealSense D455](#part-4--camera-intel-realsense-d455)**
 - [4.1 What we are doing and why](#41-what-we-are-doing-and-why)
@@ -102,7 +103,7 @@ the machine it runs on. Part 1.0 lists the pins and why each is pinned.
 - [4.9 Showing sensor data in RViz](#49-showing-sensor-data-in-rviz)
 
 **[PART 5 — Hand tracking and teleoperation](#part-5--hand-tracking-and-teleoperation)**
-- [5.0 Two methods](#50-two-methods)
+- [5.0 How this works, in one picture](#50-how-this-works-in-one-picture)
 - [5.0 How this works](#50-how-this-works-in-one-picture)
 - [5.7 Cartesian hand teleoperation](#57-method-2--cartesian-hand-teleoperation)
   - [5.8 Trackers, modes and tuning](#58-trackers-modes-and-tuning)
@@ -807,7 +808,7 @@ confirm it.
 | `*.srdf` | **Semantics** — which joints form the arm group, named poses like `home`, and which link pairs can never collide |
 | `kinematics.yaml` | Which IK solver MoveIt uses, its timeout and resolution |
 | `joint_limits.yaml` | Velocity and acceleration ceilings **for planning**. Separate from the URDF's position limits |
-| `ompl_planning.yaml` | Planner settings (RRTConnect and friends) |
+| `ompl_planning.yaml` | Planner settings (RRTConnect and friends). **Not in this package** — `MoveItConfigsBuilder` falls back to MoveIt's default OMPL settings, which is what runs |
 | `ros2_controllers.yaml` | Controller definitions — `fairino5_controller`, `joint_state_broadcaster`, and the `update_rate` |
 | `moveit_controllers.yaml` | How MoveIt hands trajectories to those controllers, via `FollowJointTrajectory` |
 | `fairino5_v6_robot.ros2_control.xacro` | **The hardware plugin line** — simulated or real. Part 3.3 |
@@ -847,7 +848,7 @@ examiner.
 
 ### Known defects in the vendor configuration
 
-Two, both found by inspection and both recorded here rather than silently patched:
+Found by inspection and recorded here rather than silently patched:
 
 | Where | Defect | Status |
 |---|---|---|
@@ -855,10 +856,8 @@ Two, both found by inspection and both recorded here rather than silently patche
 | `joint_limits.yaml` | `max_velocity` 3.15 / 3.20 rad/s = 180.5 / 183.3 °/s, above the FR5's rated **180 °/s** | Lowered to 3.0 (171.9 °/s) |
 | `fairino_hardware_interface.cpp` | `ServoJ` streamed with no `ServoMoveStart()` / `ServoMoveEnd()`, which the SDK requires | **Patched** — `patch_driver.sh` |
 | `fairino_hardware_interface.cpp` | A refused `ServoJ` logs at INFO every cycle and `write()` returns OK, so MoveIt reports success while the arm stands still | **Patched** — logs once at ERROR |
-| `fairino5_v6.urdf` | j3 limit is ±162°, but the FR5 specification says ±150° | **Not fixed.** The URDF is more permissive than the robot. Planning can produce a trajectory the arm will refuse |
-
-The second is live. Nothing in this project drives j3 past 150°, but anyone planning
-freely in RViz could.
+| `fairino5_v6.urdf` | j3 limit was ±162°, but the FR5 specification says ±150° | **Fixed** — set to ±2.6180 rad (±150°), limit and safety-controller lines |
+| `fairino5_v6_robot.ros2_control.xacro` | Committed with the plugin on real hardware while its comment said simulation | **Fixed** — committed on `mock_components/GenericSystem` |
 
 ---
 
@@ -1246,9 +1245,10 @@ offset moves a frame along Z or an `a` offset moves it along X, you are looking 
 
 The sliders publish `/joint_states`, which moves **the picture**. Nothing reaches the
 robot. To actually move the arm you need something that sends a trajectory to the
-controller — MoveIt's MotionPlanning panel, Method A, or the teleoperation in Part 5.
+controller — MoveIt's MotionPlanning panel, Method A, the teleoperation in Part 5, or the
+slider bridge in 3.8.
 
-**With the real robot connected, do not run `joint_state_publisher_gui` at all.**
+**With the real robot connected, do not run `joint_state_publisher_gui` on its own.**
 `/joint_states` then comes from the arm's own encoders, and a second publisher on the same
 topic makes RViz flicker between the real position and the slider position.
 
@@ -1256,8 +1256,40 @@ topic makes RViz flicker between the real position and the slider position.
 |---|---|---|
 | RViz alone | yes | **no** |
 | RViz + MoveIt (Part 3) | yes | yes |
+| RViz + sliders through `slider_bridge.py` (3.8) | yes | yes |
 | Method A (Part 2) | — | yes |
 | Hand teleoperation (Part 5) | yes | yes |
+
+## 3.8 RViz sliders on the real arm — no MoveIt
+
+The brief asked for the arm to be moved from RViz alone, without MoveIt. Three files do
+it:
+
+| File | Job |
+|---|---|
+| `rviz_real.launch.py` | robot_state_publisher, ros2_control_node, both controller spawners and plain `rviz2`. **No `move_group`.** Uses `MoveItConfigsBuilder` only to read the robot description the way `demo.launch.py` does |
+| `slider_controllers.yaml` | The vendor's `ros2_controllers.yaml` plus `open_loop_control: true`. Loaded only by `rviz_real.launch.py`; MoveIt keeps the original |
+| `slider_bridge.py` | Starts `joint_state_publisher_gui` remapped to `/slider_joint_states` with its sliders preset to the arm's real pose, and turns slider moves into controller goals |
+
+**What the bridge sends:** while a slider is moving, 10 times a second, one point on
+`/fairino5_controller/joint_trajectory` — at most **1°** from where the controller's
+reference is now, `time_from_start` set so every joint moves at **5 °/s** (`--max-speed`,
+capped at 20), and `header.stamp` set to the send time. Nothing while the sliders are
+still.
+
+| Guard | Value |
+|---|---|
+| Pick-up: every slider within this of the arm before anything moves | 3° |
+| Soft limits (FR5's, not the URDF's), with margin | as 6.3, 2° margin |
+| Goal never further than this past the arm — fresh / paused feedback | 1.5° / 1° |
+| All-zero or out-of-range `/joint_states` | refuse, latch |
+| Asking to move, arm not moving | 3 s → latch |
+| No `/joint_states` at all | 10 s → latch |
+
+Operating steps: `RUN_SIMULATION.md` Part 2b, `RUN_REAL_ROBOT.md` Part 5b. The reasoning
+behind each choice, including the versions that vibrated or tripped the speed alarm:
+`WHY.md` — [sliders need a bridge](WHY.md#why-the-sliders-need-a-bridge),
+[slider vibration](WHY.md#why-the-sliders-vibrated).
 
 ---
 ---
@@ -2147,26 +2179,20 @@ robot additionally tests the offsets.
 **Check every target against this table.** Axes 2 and 4 are asymmetric — −265° is valid,
 +265° is not.
 
-### ⚠ Known defect — joint 3 limit mismatch
+### ✅ Fixed — joint 3 limit mismatch
 
 | Source | Joint 3 range |
 |---|---|
-| `fairino5_v6.urdf` | **±162°** (±2.8274 rad) |
+| `fairino5_v6.urdf`, as shipped | ±162° (±2.8274 rad) |
+| `fairino5_v6.urdf`, now | **±150° (±2.6180 rad)** |
 | FR5 spec, soft limit | ±150° |
 | FR5 spec, hard limit | ±152° |
 
-±162° is the **FR16/FR20/FR30** figure, not the FR5's. **MoveIt plans against the URDF,
-so it can generate a trajectory that drives j3 past the FR5's own soft limit.**
-
-Either keep well clear of j3 extremes, or fix it in
-`src/frcobot_ros2/fairino_description/urdf/fairino5_v6.urdf`:
-
-```xml
-<!-- joint j3 -->
-<limit lower="-2.6180" upper="2.6180" .../>   <!-- ±150° -->
-```
-
-Rebuild `fairino_description` after editing the URDF.
+±162° is the **FR16/FR20/FR30** figure, not the FR5's. MoveIt plans against the URDF, so
+it could generate a trajectory that drove j3 past the FR5's own soft limit. The `<limit>`
+and `<safety_controller>` lines of joint `j3` now say ±2.6180. With
+`colcon build --symlink-install` no rebuild is needed; otherwise rebuild
+`fairino_description`.
 
 ### ⚠ RETRACTED — the ServoJ "rate mismatch"
 
@@ -2213,7 +2239,7 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 
 # PART 7 — Status
 
-*Last updated: 14 November 2026.*
+*Last updated: 26 November 2026.*
 
 ## Verified on hardware
 
@@ -2237,6 +2263,10 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 - MoveIt motion planning executed on the real arm from RViz
 - **RViz driven standalone** — `robot_state_publisher` + `joint_state_publisher_gui` +
   bare `rviz2`, with RobotModel and TF added by hand (Part 3.7)
+- **RViz sliders moved the real arm with no MoveIt** — `rviz_real.launch.py` +
+  `slider_bridge.py`, smooth at 5 °/s after the vibration fixes (Part 3.8), 26 Nov
+- **The robot in MANUAL mode was the cause of "SUCCEEDED but no motion"** — switched to
+  AUTO, MoveIt executes on the real arm, 26 Nov
 - DDS misconfiguration on the lab workstation diagnosed and fixed (Part 8)
 
 ## Measured
@@ -2252,6 +2282,9 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 | Base rotation range, cylindrical mode | ±90° (vs ±30° Cartesian) |
 | Commanded velocity before the lead clamp, 5 °/s limit | 80 °/s |
 | Commanded velocity after the lead clamp | 6.0 °/s |
+| `/joint_states`, robot only, `ros2 topic hz` | 100.0 Hz, max gap 12 ms |
+| `/joint_states` seen by a *reliable* subscriber | ~1 s bursts |
+| Slider bridge, worst jump if the control loop stalls 1 s (simulated) | 1.0° in one cycle |
 
 ## Fixed, worth knowing about
 
@@ -2263,6 +2296,11 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
 - `ServoJ` was streamed with no `ServoMoveStart()`. Patched
 - A refused `ServoJ` was invisible: INFO level, every cycle, and `write()` returned OK.
   Now one ERROR naming the remedy
+- **Slider vibration** — unstamped, closed-loop goals re-sent every 40 ms made the arm
+  buzz in place; a long goal plus a stall tripped the axis 6 speed alarm. Fixed with
+  stamped 1° segments, `open_loop_control`, send-on-change (Part 3.8,
+  [WHY](WHY.md#why-the-sliders-vibrated))
+- j3 URDF limit ±162° → ±150° (Part 6.3)
 - Mirror bug — the tracker followed the wrong arm because detection ran on the flipped
   frame
 - Flip guard compared against the lagging command instead of the previous IK result,
@@ -2306,6 +2344,13 @@ At 10% and 0.05 the arm runs at **0.5%** of maximum. Raise them one at a time.
 
 ## Open
 
+- **`/joint_states` pauses as seen by subscribers.** With only the robot running,
+  `ros2 topic hz /joint_states` shows a clean 100 Hz (max 12 ms); a script with a
+  *reliable* subscription received it in ~1 s bursts. Subscribing best-effort
+  (`qos_profile_sensor_data`) — now done in `hand_teleop.py`, `slider_bridge.py` and
+  `nudge_j1.py` — mostly fixes it; pauses still appeared in some sessions, and a clean
+  restart of everything helped. Likely the same thing as the stall below.
+  [WHY.md](WHY.md#why-joint_states-arrived-in-bursts)
 - **`/joint_states` stalls on the real hardware setup.** The plugin reaches `active`, all
   six interfaces show `[claimed]`, both controllers are `active`, the topic exists in
   `ros2 topic list` — but nothing is published, and teleop reports `FROZE`. The
@@ -2316,11 +2361,14 @@ At 10% and 0.05 the arm runs at **0.5%** of maximum. Raise them one at a time.
   (`ros2_cmd_server` + `/nonrt_state_data`) — if Method A reads state fine, the problem
   is in the ros2_control plugin, not the connection.
 - **J5 rotation direction** not recorded
-- **j3 URDF limit** not corrected (±162° should be ±150°)
 - **Camera not in the URDF** — MoveIt does not know it exists, so collision checking
   ignores it
 - **IMU** unavailable in WSL
-- **Python demo node** for Method A — motion is still typed by hand
+- **Python demo node** for Method A — `fairino_home.py` sends the arm home; any other
+  Method A motion is still typed by hand
+- **Hand control goals** — `hand_teleop.py` still sends unstamped, closed-loop goals
+  every 40 ms; giving it the slider bridge's stamped, open-loop goals should remove the
+  same kind of buzz
 
 ## Documentation
 
@@ -2328,8 +2376,11 @@ At 10% and 0.05 the arm runs at **0.5%** of maximum. Raise them one at a time.
 - `RUN_REAL_ROBOT.md` — short operating guide for the real arm, safety first
 - `FOLLOW_ALONG.md` — 49 steps, bare Windows laptop to a moving arm, every step with an
   expected result and a failure box
-- `README.md` — this file: why each step exists, the parameters, the full troubleshooting
-  reference
+- `README.md` — setup, the file list, and where the project stands
+- `HOW_IT_WORKS.md` — the whole project explained from nothing
+- `WHY.md` — every "why is it like this?"
+- `REFERENCE.md` — this file: why each step exists, the parameters, the full
+  troubleshooting reference
 - `versions.sh` → `VERSIONS.txt` — every version, recorded from the machine itself
 - `docs/screenshots/` — Part 9 lists what to capture and under what filename
 

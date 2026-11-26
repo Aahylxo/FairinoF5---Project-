@@ -62,7 +62,7 @@ source ~/fairino_380_ws/install/local_setup.bash
 ros2 topic hz /joint_states
 ```
 
-**You should see:** a rate around **125**. `Ctrl+C` to stop watching.
+**You should see:** a rate around **100**. `Ctrl+C` to stop watching.
 
 > **If it says `does not appear to be published yet`** — the controller manager is not
 > running. Check:
@@ -140,8 +140,47 @@ Drag a slider. The arm moves. **No MoveIt anywhere.**
 
 > 💡 [RViz vs MoveIt](WHY.md#why-rviz-and-moveit-are-different)
 
-**Stop all three before Part 3** — `joint_state_publisher_gui` publishes `/joint_states`
-and will fight anything else that does.
+**Stop all three before Part 2b or Part 3** — `joint_state_publisher_gui` publishes
+`/joint_states` and will fight anything else that does.
+
+---
+
+# PART 2b — RViz sliders that drive the controller, no MoveIt
+
+Part 2's sliders only move the picture. This is the version that commands the robot —
+here the simulated one, on the real arm in `RUN_REAL_ROBOT.md` Part 5b. Same commands
+both times; only the plugin line differs.
+[How it works](HOW_IT_WORKS.md#7-rviz-sliders-on-the-real-arm-no-moveit)
+
+Stop everything else first. Step 0 must say `mock_components/GenericSystem`.
+
+```bash
+# terminal 1 -- the robot and a plain RViz, no MoveIt
+cd ~/fairino_380_ws
+source /opt/ros/humble/setup.bash
+source install/local_setup.bash
+ros2 launch ~/fairino_380_ws/rviz_real.launch.py
+```
+
+In RViz (once, then **File → Save Config**): **Fixed Frame** → `base_link`,
+**Add → RobotModel** (Description Topic `/robot_description`), **Add → TF**. The
+simulated arm starts stretched straight out — all zeros is its real start pose.
+
+```bash
+# terminal 2 -- the sliders
+source /opt/ros/humble/setup.bash
+source ~/fairino_380_ws/install/local_setup.bash
+python3 ~/fairino_380_ws/slider_bridge.py
+```
+
+A slider window opens and the terminal says **`ARMED`**. Drag a slider: the arm in RViz
+follows at 5 °/s. `--dry-run` computes and prints without sending; `--max-speed 3` is
+slower.
+
+> **`not armed - move these sliders to the arm`** — the sliders did not start at the
+> arm's pose. Drag the listed ones until they match; nothing moves until they do.
+>
+> **Center** sends the sliders back to where the arm was when the bridge started.
 
 ---
 
@@ -256,7 +295,7 @@ on from there. [Why pinch?](WHY.md#why-pinch-to-move)
 ## Quick checks
 
 ```bash
-ros2 topic hz /joint_states                                          # ~125
+ros2 topic hz /joint_states                                          # ~100
 ros2 topic info /joint_states --verbose | grep -i "publisher count"  # must be 1
 ros2 node list | grep controller_manager                             # must exist
 pgrep -af hand_teleop                                                # only one
@@ -275,7 +314,8 @@ usbipd detach --busid 1-2
 
 ---
 
-**Full explanations:** `README.md` — Part 3 for MoveIt, Part 3.7 for standalone RViz,
-Parts 5.7 and 5.8 for the hand control.
+**How it all works:** [HOW_IT_WORKS.md](HOW_IT_WORKS.md). **Every detail:**
+[REFERENCE.md](REFERENCE.md) — Part 3 for MoveIt, 3.7 for standalone RViz, 5.7 and 5.8
+for the hand control.
 
 **To run on the real robot:** `RUN_REAL_ROBOT.md`. **Read all of it first.**

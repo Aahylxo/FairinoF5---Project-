@@ -5,8 +5,10 @@
 
         <ros2_control name="${name}" type="system">
             <hardware>
-                <!-- By default, set up controllers for simulation. This won't work on real hardware -->
-                <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
+                <!-- THE sim/real switch. Committed on SIMULATION so a fresh clone runs
+                     with no robot. For the real arm, RUN_REAL_ROBOT.md Step 5 swaps it to
+                     fairino_hardware/FairinoHardwareInterface - and swap it back after. -->
+                <plugin>mock_components/GenericSystem</plugin>
             </hardware>
             <joint name="j1">
                 <command_interface name="position"/>
