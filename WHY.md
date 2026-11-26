@@ -25,7 +25,7 @@ stay short.
 [the shaking](#why-the-arm-shook) ·
 [one camera](#why-only-one-camera-program) ·
 [DDS settings](#why-the-dds-settings) ·
-[error 14](#why-the-robot-refuses-commands-error-14) ·
+**[error 14 — THE ANSWER](#why-the-robot-refuses-commands-error-14)** ·
 [the update_rate mistake](#why-update_rate-went-to-125-and-back)
 
 ---
@@ -412,7 +412,51 @@ echo $RMW_IMPLEMENTATION $ROS_LOCALHOST_ONLY   # same in every terminal
 
 ## Why the robot refuses commands (error 14)
 
-The single most expensive thing in this project. Three sessions.
+# ⭐ THE ANSWER: the robot was in MANUAL mode.
+
+**Switch it to AUTO. That is the whole fix.**
+
+```bash
+# check it -- needs ros2_cmd_server running
+timeout 10s ros2 topic echo /nonrt_state_data --once --field robot_mode
+```
+
+| | |
+|---|---|
+| `0` | **AUTO** — ServoJ works, MoveIt works |
+| `1` | **MANUAL** — ServoJ refused, MoveIt silently does nothing |
+
+Change it on the pendant, or on the web interface at `http://192.168.58.2` — the hand
+icon in the top bar, right of the speed box.
+
+### Why it was so hard to see
+
+Manual mode does not block everything. It blocks exactly one thing:
+
+| In manual mode | |
+|---|---|
+| Reading `/joint_states` | ✅ works |
+| `MoveJ` — one discrete command | ✅ works |
+| **`ServoJ` — continuous streaming** | ❌ **refused, error 14** |
+
+So the arm reports its position perfectly, Method A moves it fine, every status says
+healthy — and **only MoveIt fails.** Which looks like a MoveIt problem, and isn't.
+
+It is a sensible safety design: nobody should be able to stream motion into a robot that
+someone may be stood next to, hand-guiding. It is just invisible from the computer.
+
+### How it was proved
+
+The run before the fix already had every other change in place — `update_rate` back at
+100, joint limits lowered, the `ServoMoveStart` patch applied, the alarm cleared. It
+failed. The next run differed in exactly one way, `robot_mode: 1 → 0`, and the arm moved.
+
+**One variable.**
+
+---
+
+Below is everything that was investigated before the mode was found. The defects are
+real and worth keeping — but none of them was the blocker.
 
 ### What it looks like
 

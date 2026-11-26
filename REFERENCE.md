@@ -2277,6 +2277,33 @@ determines what "positive X" means in a `CARTPoint` — it is not the room's X.
   angles onto robot joints cannot know where the tool ends up — see the note in Part 5.0.
   Superseded by the Cartesian method. **Still in git history** if it is ever wanted.
 
+## ⭐ Resolved — 26 November
+
+**MoveIt executes on the real arm.** The blocker was the robot being in **manual mode**.
+
+In manual the FR5 refuses the `ServoJ` stream (error 14) while still publishing
+`/joint_states` and still accepting `MoveJ`. Every check on the computer passes and only
+the MoveIt path fails, which is why it took three sessions.
+
+Proved by elimination: the run immediately before had `update_rate` back at 100, the
+joint limits lowered, the `ServoMoveStart` patch applied and the alarm cleared, and it
+failed. The next run changed one thing — `robot_mode: 1 → 0` — and the arm moved.
+
+**Operationally:** check `robot_mode` is `0` before every session.
+
+```bash
+timeout 10s ros2 topic echo /nonrt_state_data --once --field robot_mode
+```
+
+### The two speed limits multiply
+
+| | |
+|---|---|
+| Web UI speed box | a global cap on the robot itself, applies to everything |
+| MoveIt velocity scaling | scales the planned trajectory, **resets to 1.0 every launch** |
+
+At 10% and 0.05 the arm runs at **0.5%** of maximum. Raise them one at a time.
+
 ## Open
 
 - **`/joint_states` stalls on the real hardware setup.** The plugin reaches `active`, all

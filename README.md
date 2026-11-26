@@ -250,6 +250,8 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 - Forward and inverse kinematics — **2000 / 2000, zero failures**
 - Hand control in simulation
 - **Hand control moved the real arm**
+- **MoveIt plans and executes on the real arm** — confirmed 26 Nov, once the robot was
+  switched out of manual mode
 
 ## ⏳ Left to do
 
@@ -259,12 +261,29 @@ sed -i 's|fairino_hardware/FairinoHardwareInterface|mock_components/GenericSyste
 | **Screenshots** | Four that matter. Nothing blocking it |
 | **The `/joint_states` fault** | Needs the launch log from the lab |
 
-## ⚠️ Known problems
+## ⭐ If the arm will not move and everything says it is fine
 
-- **The arm stops partway through a move and MoveIt reports SUCCEEDED.** The robot
-  latches a fault and refuses commands while still answering reads, so everything in
-  software looks healthy. **Check `http://192.168.58.2` (admin / 123) for an alarm.**
-  [The full story](WHY.md#why-the-robot-refuses-commands-error-14)
+**The robot is probably in MANUAL mode. Switch it to AUTO.**
+
+In manual the robot still reports its position, still accepts `MoveJ`, and still shows
+every status as healthy — but **refuses the `ServoJ` stream MoveIt uses.** So RViz plans,
+reports SUCCEEDED, and nothing happens.
+
+```bash
+# needs ros2_cmd_server running
+timeout 10s ros2 topic echo /nonrt_state_data --once --field robot_mode
+```
+
+**`0` = auto (good). `1` = manual (nothing will move).**
+
+Change it on the pendant, or at `http://192.168.58.2` — the hand icon in the top bar.
+
+[The full story](WHY.md#why-the-robot-refuses-commands-error-14) — it cost three days.
+
+## ⚠️ Other known problems
+
+- **A latched fault also blocks motion** and looks identical from the computer. Check
+  `http://192.168.58.2` (admin / 123) for a red alarm and clear it
 - **`/joint_states` has failed twice** — once publishing nothing, once publishing all
   zeros while the arm was at home. [What happened](WHY.md#why-the-arm-shook)
 - **The camera is not in the robot model** — so MoveIt does not know it is there and

@@ -77,6 +77,34 @@ A typical one:
 **Clear it, then carry on.** If it comes straight back when you move, that is a real
 limits problem — see the troubleshooting at the end.
 
+## Step 2c — ⭐ Check the robot is in AUTO mode
+
+**This is the one that cost three days.**
+
+On the pendant, or on the web interface — the **hand icon** in the top bar, right of the
+speed box.
+
+| Mode | |
+|---|---|
+| **AUTO** | ServoJ works, MoveIt works |
+| **MANUAL** | ServoJ refused. MoveIt plans, says SUCCEEDED, and **nothing moves** |
+
+Manual mode still lets the robot report its position and still accepts `MoveJ`, so every
+check on the computer passes. Only the MoveIt path fails.
+
+Verify it in software once `ros2_cmd_server` is up (Part 6):
+
+```bash
+timeout 10s ros2 topic echo /nonrt_state_data --once --field robot_mode
+```
+
+**`0` = auto. `1` = manual.**
+
+> Also check the **speed box** on the web page is not `0`. At 0% nothing moves whatever
+> else is right.
+
+[Why manual mode does this](WHY.md#why-the-robot-refuses-commands-error-14)
+
 ## Step 3 — Network
 
 Ethernet from the controller to the laptop. Laptop must be **192.168.58.1**, mask
@@ -393,6 +421,7 @@ Anything above 0 means the robot rejected commands mid-move.
 
 | | Check |
 |---|---|
+| 0 | **Is the robot in AUTO mode?** `robot_mode` must be `0`. This is the most likely answer |
 | 1 | **The alarm** at `http://192.168.58.2`. Which axis does it name? |
 | 2 | **Velocity Scaling** in RViz — it resets to **1.0** every launch. Set it to **0.05** |
 | 3 | `grep update_rate .../ros2_controllers.yaml` — must be **100** |
